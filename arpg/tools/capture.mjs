@@ -24,6 +24,7 @@ const TIMEOUT = Number(args.timeout ?? 240000);
 // Software rendering makes every one of these cost ~0.5-1.5 s, hence the low
 // default compared to a GPU harness.
 const SETTLE = Number(args.settle ?? 28);
+const SHUTTER = Number(args.shutter ?? 180000);
 
 const server = await ensureServer(PORT);
 const browser = await launch();
@@ -57,7 +58,9 @@ try {
     await page.evaluate(() => window.__PRESENT__(2));
 
     mkdirSync(dirname(OUT), { recursive: true });
-    await page.screenshot({ path: OUT, type: 'png' });
+    // Generous: on a software rasteriser the shutter may still be draining a
+    // frame, and playwright's 30 s default fires long before that finishes.
+    await page.screenshot({ path: OUT, type: 'png', timeout: SHUTTER });
     out = OUT;
 
     const info = await page.evaluate('window.__RENDER_INFO__ ?? null');

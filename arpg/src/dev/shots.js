@@ -263,10 +263,35 @@ export function installShotApi(engine, { capture, lockstep = false } = {}) {
     engine.start = function () { this._running = true; };
     window.__LOCKSTEP__ = true;
 
+    /**
+     * A one-pixel readPixels after each step, which is the only reliable way to
+     * make a frame actually FINISH before the next one is issued.
+     *
+     * WebGL commands are queued and drained by the GPU process asynchronously.
+     * With a real GPU that backlog drains faster than rAF issues work, so nobody
+     * notices. On this container's software rasteriser a frame costs ~0.5-1.5 s
+     * while rAF (under --disable-frame-rate-limit) fires every few ms, so
+     * __PUMP__(28) would return in ~200 ms having only QUEUED 28 frames' worth of
+     * work. The screenshot then blocks draining all of it and hits playwright's
+     * 30 s timeout — and pumping harder eventually killed the browser process.
+     *
+     * readPixels is a synchronising call: it cannot return until everything
+     * before it has executed. One pixel is enough, and it costs nothing next to
+     * the frame it is waiting on. It also makes the ms in __RENDER_INFO__ a real
+     * measurement instead of the time spent issuing commands.
+     */
+    const syncGpu = () => {
+      const gl = engine.ctx.peek('render')?.renderer?.getContext?.();
+      if (!gl) return;
+      if (!syncGpu.px) syncGpu.px = new Uint8Array(4);
+      gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, syncGpu.px);
+    };
+
     window.__PUMP__ = (n = 1) => new Promise((resolve) => {
       let i = 0;
       const tick = () => {
         engine.step();
+        syncGpu();
         snapInfo();
         if (++i >= n) resolve(engine.time.frame);
         else requestAnimationFrame(tick);

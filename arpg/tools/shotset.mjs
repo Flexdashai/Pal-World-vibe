@@ -21,6 +21,7 @@ const PORT = Number(args.port ?? DEFAULT_PORT);
 const W = Number(args.w ?? 1280);
 const H = Number(args.h ?? 720);
 const SETTLE = Number(args.settle ?? 28);
+const SHUTTER = Number(args.shutter ?? 180000);
 const OUTDIR = resolve(args.out ?? 'arpg/shots/set');
 const TIMEOUT = Number(args.timeout ?? 240000);
 // 4 cores and a CPU rasteriser: 2 pages in flight is the throughput sweet spot,
@@ -70,7 +71,7 @@ async function shoot(name) {
     await page.evaluate((n) => window.__PUMP__(n), SETTLE);
     await page.evaluate(() => window.__PRESENT__(2));
 
-    await page.screenshot({ path: `${OUTDIR}/${name}.png`, type: 'png' });
+    await page.screenshot({ path: `${OUTDIR}/${name}.png`, type: 'png', timeout: SHUTTER });
     const info = await page.evaluate('window.__RENDER_INFO__ ?? null');
     const errs = errorsOnly(logs);
     if (errs.length) report.ok = false;
