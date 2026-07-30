@@ -14,3 +14,8 @@ demo/
 .tmp-demo/
 .tmp-rend/
 revcrops/
+
+# ARPG capture output — regenerate with arpg/tools/shotset.mjs
+arpg/shots/
+arpg/dist/
+.scratch/
