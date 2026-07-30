@@ -17,8 +17,8 @@
  */
 
 import { RARITY, UI, ELEMENTS } from '../core/palette.js';
-import { el, setText, setOpacity, setStyle, setShown, groupNum, compactNum } from './dom.js';
-import { damp, mixHex, alpha } from './theme.js';
+import { el, setText, setOpacity, setStyle, setShown, compactNum } from './dom.js';
+import { mixHex } from './theme.js';
 
 const ROWS = 7;
 const ROW_LIFE = 7.5;

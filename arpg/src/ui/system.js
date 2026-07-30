@@ -27,8 +27,8 @@
  * scanline sweep, the caret blink) are CSS.
  */
 
-import { SYSTEM_TIMING as T, M, clamp01, easeOutQuint, easeOutExpo } from './theme.js';
-import { el, setText, setOpacity, setTransform, setStyle, setShown, clearNode } from './dom.js';
+import { SYSTEM_TIMING as T, clamp01, easeOutQuint, easeOutExpo } from './theme.js';
+import { el, setText, setOpacity, setTransform, setShown, clearNode } from './dom.js';
 
 const LINE_CLASS = { em: 'ln em', gold: 'ln gd', violet: 'ln vi', plain: 'ln' };
 

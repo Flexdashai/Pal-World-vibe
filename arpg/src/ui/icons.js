@@ -352,13 +352,28 @@ export const ITEM_PATHS = {
   scroll: pScroll, belt: pBelt, pauldron: pPauldron, orb: pOrb, shield: pWard,
 };
 
+/**
+ * Item icons are rendered OBJECTS, not rarity swatches.
+ *
+ * The first pass filled each glyph with the rarity colour at full saturation
+ * and the inventory came out looking like a bag of boiled sweets — twelve
+ * saturated hues in a grid, in a game whose whole art direction is
+ * near-monochrome. Shipped ARPGs render the item in its own material (steel,
+ * leather, bone) and communicate rarity through the SOCKET: the border, the
+ * glow, and the name in the tooltip. So the tint is mixed only 34% into a cold
+ * steel ramp, which keeps a legendary recognisably warm without the grid
+ * turning into a colour chart.
+ */
+const ITEM_STEEL = '#9aa0ad';
+
 export function drawItemIcon(c, size, glyph, tintHex) {
   const path = ITEM_PATHS[glyph] ?? pSword;
-  const hot = mixHex(tintHex, '#ffffff', 0.62);
-  const dark = shade(tintHex, 0.26);
+  const body = mixHex(ITEM_STEEL, tintHex, 0.34);
+  const hot = mixHex(body, '#ffffff', 0.55);
+  const dark = shade(body, 0.20);
 
   const g = c.createRadialGradient(size * 0.5, size * 0.55, 0, size * 0.5, size * 0.55, size * 0.6);
-  g.addColorStop(0, alpha(tintHex, 0.18));
+  g.addColorStop(0, alpha(tintHex, 0.13));
   g.addColorStop(1, alpha(tintHex, 0));
   c.fillStyle = g;
   c.fillRect(0, 0, size, size);
@@ -371,7 +386,7 @@ export function drawItemIcon(c, size, glyph, tintHex) {
   unit(c, size, (cc) => {
     const grad = cc.createLinearGradient(-0.6, -1, 0.5, 1);
     grad.addColorStop(0, hot);
-    grad.addColorStop(0.40, tintHex);
+    grad.addColorStop(0.40, body);
     grad.addColorStop(1, dark);
     cc.fillStyle = grad;
     path(cc); cc.fill();

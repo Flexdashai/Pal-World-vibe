@@ -20,7 +20,7 @@
  */
 
 import { ELEMENTS, UI, RARITY } from '../core/palette.js';
-import { M, BRASS, SLATE, alpha, mixHex } from './theme.js';
+import { M, BRASS, alpha } from './theme.js';
 import { el, canvas as mkCanvas, setText } from './dom.js';
 import { bevelRing, rivet, tarnish, scroll, offscreen } from './ornament.js';
 
@@ -103,6 +103,12 @@ export class MiniMap {
       rivet(c, cx + Math.cos(a) * (this.R + 5 * u), cy + Math.sin(a) * (this.R + 5 * u), 2.6 * u);
     }
     tarnish(c, 0, 0, px, px, rng, noise, 0.9);
+
+    // The edge falloff for the live map, built once here rather than on every
+    // redraw: it depends only on the baked size.
+    this.gEdge = this.cMap.createRadialGradient(cx, cy, this.R * 0.62, cx, cy, this.R);
+    this.gEdge.addColorStop(0, 'rgba(5,5,10,0)');
+    this.gEdge.addColorStop(1, 'rgba(5,5,10,0.92)');
 
     // inner shadow so the map appears recessed under glass
     c.save();
@@ -301,10 +307,7 @@ export class MiniMap {
     c.restore();
 
     // --- edge falloff -------------------------------------------------------
-    const g = c.createRadialGradient(cx, cy, R * 0.62, cx, cy, R);
-    g.addColorStop(0, 'rgba(5,5,10,0)');
-    g.addColorStop(1, 'rgba(5,5,10,0.92)');
-    c.fillStyle = g;
+    c.fillStyle = this.gEdge;
     c.fillRect(cx - R, cy - R, R * 2, R * 2);
 
     c.restore();                                       // A

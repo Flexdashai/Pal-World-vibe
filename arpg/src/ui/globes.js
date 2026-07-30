@@ -162,6 +162,18 @@ export class Globe {
     empty.addColorStop(1, alpha(t.dark, 0.85));
     this.gEmpty = empty;
 
+    // Density wisps. Three gradients centred on the ORIGIN, filled after a
+    // translate — the alternative is `createRadialGradient` three times per orb
+    // per frame, which is 360 allocations a second for two orbs.
+    this.gWisp = [];
+    for (let i = 0; i < 3; i++) {
+      const wr = R * (0.55 + i * 0.12);
+      const w = c.createRadialGradient(0, 0, 0, 0, 0, wr);
+      w.addColorStop(0, 'rgba(26,11,15,1)');
+      w.addColorStop(1, 'rgba(255,255,255,1)');
+      this.gWisp.push({ g: w, r: wr });
+    }
+
     this._sBubble = alpha(t.foam, 0.42);
     this._sBubbleHi = alpha('#ffffff', 0.30);
     this._sMeniscus = mixHex(t.foam, '#ffffff', 0.45);
@@ -292,17 +304,17 @@ export class Globe {
     // vertical ramp, which is the exact look the quality bar calls a flat
     // surface — real blood and real aether are not homogeneous.
     c.globalCompositeOperation = 'multiply';
+    c.globalAlpha = 0.34;
     for (let i = 0; i < 3; i++) {
       const ph = i * 2.1;
       const wx = Math.sin(t * 0.31 + ph) * R * 0.42;
       const wy = R * (0.45 + i * 0.55) + Math.cos(t * 0.24 + ph * 1.7) * R * 0.22;
-      const wr = R * (0.55 + i * 0.12);
-      c.globalAlpha = 0.34;
-      const g = c.createRadialGradient(wx, wy, 0, wx, wy, wr);
-      g.addColorStop(0, 'rgba(24,10,14,1)');
-      g.addColorStop(1, 'rgba(255,255,255,1)');
-      c.fillStyle = g;
-      c.fillRect(wx - wr, wy - wr, wr * 2, wr * 2);
+      const { g: wg, r: wr } = this.gWisp[i];
+      c.save();
+      c.translate(wx, wy);
+      c.fillStyle = wg;
+      c.fillRect(-wr, -wr, wr * 2, wr * 2);
+      c.restore();
     }
     c.globalAlpha = 1;
     c.globalCompositeOperation = 'lighter';

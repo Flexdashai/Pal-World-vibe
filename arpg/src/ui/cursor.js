@@ -155,9 +155,16 @@ export class GroundCursor {
     this.ground = new THREE.Vector3();
     /** Where the player is standing, so a parked cursor tracks them. */
     this.anchor = new THREE.Vector3();
-    /** Up-screen and slightly right of the player: -X-Z is screen up under the
-     *  fixed 45-degree yaw, so this reads as "aiming into the room". */
-    this._POSE_OFFSET = new THREE.Vector3(-2.9, 0, -1.4);
+    /**
+     * Where the reticle parks when no pointer has ever moved (capture mode).
+     *
+     * Under the fixed 45-degree yaw, screen-right is (+0.707, 0, -0.707) and
+     * screen-up is (-0.707, 0, -0.707). This is ~3.5 m right and ~1 m down from
+     * the player, which reads as "aiming at something beside them" and, just as
+     * importantly, keeps the ring clear of the centre of frame where the SYSTEM
+     * windows live.
+     */
+    this._POSE_OFFSET = new THREE.Vector3(3.2, 0, -1.8);
     this._clickT = -1;
     this._exposure = null;
     this._lastX = -9999;

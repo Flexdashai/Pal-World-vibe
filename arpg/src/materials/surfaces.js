@@ -185,23 +185,31 @@ export const SURFACES = [
 	// several beds; the hue spread is small but the value spread is large, and
 	// under-doing it is what makes a procedural floor read as one grey sheet.
 	vec3 base = mix( MN_FLAGSTONE, MN_STONE_COLD, id );
-	base *= 0.52 + 1.15 * id2;
+	base *= 0.42 + 1.45 * id2;
 	base = mix( base, MN_STONE_WARM, 0.34 * mnFbm( uv * 2.0, vec2( 2.0 ), 2, 0.5 ) );
 
 	// Aggregate: pale quartz grains and dark inclusions. This is the layer that
 	// keeps the stone legible at 0.5 m and it has to survive mipmapping, so it
-	// is biased bright rather than symmetric.
+	// is biased bright rather than symmetric. Two grain sizes, because a single
+	// speckle population reads as film noise rather than as rock.
 	float quartz = mnSpeckle( rp * 5.6, vec2( 26.0 * 5.6 ), 0.32, 0.20 );
-	float dark = mnSpeckle( rp * 3.3 + 7.0, vec2( 26.0 * 3.3 ), 0.24, 0.30 );
-	base *= 1.0 + quartz * 1.05 - dark * 0.40;
+	float quartzL = mnSpeckle( rp * 2.4 + 3.0, vec2( 26.0 * 2.4 ), 0.20, 0.26 );
+	float dark = mnSpeckle( rp * 3.3 + 7.0, vec2( 26.0 * 3.3 ), 0.26, 0.30 );
+	base *= 1.0 + quartz * 1.35 + quartzL * 0.75 - dark * 0.45;
 	// Mottling at the 5-10 cm scale — weathering, not grain. Without a band here
 	// the stone face is a smooth gradient between the aggregate specks.
-	base *= 0.78 + 0.46 * mid;
+	base *= 0.74 + 0.54 * mid;
 	base *= 0.90 + 0.22 * fine;
 
-	// Worn centre: polished by feet, so slightly lighter and much smoother.
-	float worn = smoothstep( 0.55, 0.05, central ) * ( 0.55 + 0.45 * id );
-	base *= 1.0 + worn * 0.24;
+	// Traffic polish. This is a PATCH FIELD, not a per-flag radial term: people
+	// walk in lines, so the wear crosses several stones and stops, and it is
+	// only pulled back from the joints because the edges of a flag never see a
+	// boot sole. A per-cell radial highlight — the obvious implementation — puts
+	// the same bright oval in the middle of every stone and is instantly read as
+	// a repeat.
+	float wearField = mnFbm( uv * 2.6 + 19.0, vec2( 3.0 ), 3, 0.55 );
+	float worn = smoothstep( 0.46, 0.82, wearField ) * ( 1.0 - central * 0.65 ) * ( 0.5 + 0.7 * id );
+	base *= 1.0 + worn * 0.20;
 
 	// Joint fill is dirt-coloured, not stone-coloured, and it is LIGHTER than
 	// the geometry-driven shading suggests — the baked AO and the cavity term
@@ -212,7 +220,7 @@ export const SURFACES = [
 	f.albedo *= 1.0 - chipMask * 0.16;
 
 	// ---- roughness -----------------------------------------------------
-	f.rough = 0.74 - worn * 0.26 + ( fine - 0.5 ) * 0.16 + quartz * 0.12 - ( mid - 0.5 ) * 0.10;
+	f.rough = 0.74 - worn * 0.30 + ( fine - 0.5 ) * 0.16 + quartz * 0.12 - ( mid - 0.5 ) * 0.10;
 	f.rough = mix( f.rough, 0.95, joint );
 	f.rough = mix( f.rough, 0.88, chipMask );
 	f.metal = 0.0;
@@ -379,7 +387,11 @@ export const SURFACES = [
 
 	// ---- albedo --------------------------------------------------------
 	// Warm bone-white matrix, cold grey veins — the classic crypt marble.
-	vec3 matrix = mix( MN_BONE * 0.36, MN_BONE * 0.52, cloud );
+	// Aged, not gleaming. A cathedral marble at its quarry-fresh reflectance
+	// (~0.6) is four times brighter than every other surface in a crypt and
+	// pulls the eye straight off the character; centuries of soot and candle
+	// smoke take it a long way down, and that is what this palette wants.
+	vec3 matrix = mix( MN_BONE * 0.24, MN_BONE * 0.36, cloud );
 	matrix *= 0.86 + 0.28 * mnHash11( id * 13.1 );
 	vec3 veinC = mix( MN_STONE_COLD * 1.4, MN_STONE_WARM * 0.8, cloud );
 	f.albedo = mix( matrix, veinC, vein * 0.85 );
@@ -467,16 +479,18 @@ export const SURFACES = [
     glsl: /* glsl */ `
 	float coarse = mnFbm( uv * 12.0, vec2( 12.0 ), 4, 0.55 );
 	float grain = mnFbm( uv * 64.0, vec2( 64.0 ), 3, 0.5 );
-	// Aggregate stones pressed into the mix, half-exposed.
+	// Aggregate stones pressed into the mix, half-exposed. Kept LOW contrast on
+	// purpose: a bright, sparse aggregate on a dark matrix reads as white dots
+	// on asphalt, which is the failure mode this surface fell into first.
 	vec4 agg = mnWorley( uv * 20.0, vec2( 20.0 ), 0.9 );
-	float exposed = smoothstep( 0.30, 0.06, agg.x ) * smoothstep( 0.4, 0.7, mnHash11( agg.z * 33.0 ) );
+	float exposed = smoothstep( 0.30, 0.08, agg.x ) * smoothstep( 0.35, 0.75, mnHash11( agg.z * 33.0 ) );
 	float pit = mnSpeckle( uv * 55.0, vec2( 55.0 ), 0.28, 0.35 );
 
 	f.height = clamp( 0.60 + ( coarse - 0.5 ) * 0.22 + ( grain - 0.5 ) * 0.08 + exposed * 0.10 - pit * 0.10, 0.0, 1.0 );
 
-	vec3 base = MN_MORTAR * ( 0.72 + 0.6 * coarse );
-	base = mix( base, MN_STONE_COLD * ( 0.8 + 0.9 * agg.z ), exposed * 0.85 );
-	base *= 0.88 + 0.24 * grain;
+	vec3 base = MN_MORTAR * ( 0.48 + 0.72 * coarse );
+	base = mix( base, MN_STONE_COLD * ( 1.0 + 0.9 * agg.z ), exposed * 0.5 );
+	base *= 0.86 + 0.30 * grain;
 	f.albedo = base;
 
 	f.rough = 0.94 - exposed * 0.20 + ( grain - 0.5 ) * 0.08;
@@ -1334,9 +1348,13 @@ export const SURFACES = [
 	stone -= ( 1.0 - framePanel ) * 0.02;
 
 	// ---- the carving ----------------------------------------------------
-	// Two glyph scales: a large inscription and a fine marginal gloss.
-	float g1 = mnRunes( uv, vec2( 4.0, 4.0 ), 0.115 );
-	float g2 = mnRunes( uv * 1.0 + 0.5, vec2( 9.0, 9.0 ), 0.075 ) * 0.55;
+	// One inscription at 53 cm per glyph plus a sparse marginal gloss. This was
+	// four glyph columns and a dense second layer first, and at the sizes this
+	// texture is actually seen at the strokes merged into blobs — the thing that
+	// makes a rune read as writing is the WHITE SPACE around a thin stroke, so
+	// the cell count comes down and the stroke width comes down with it.
+	float g1 = mnRunes( uv, vec2( 3.0, 3.0 ), 0.072 );
+	float g2 = mnRunes( uv * 1.0 + 0.5, vec2( 6.0, 6.0 ), 0.055 ) * 0.42;
 	float glyph = clamp( max( g1, g2 ) * framePanel, 0.0, 1.0 );
 
 	// A V-cut channel: deepest in the middle of the stroke.
@@ -1358,9 +1376,10 @@ export const SURFACES = [
 	f.metal = 0.0;
 	f.alpha = 1.0;
 
-	// The emissive mask rides in the carved depth: only the glyph channels glow,
-	// which is what makes the light look like it is coming from INSIDE the rock.
-	f.emissiveMask = smoothstep( 0.25, 0.8, depth );
+	// The emissive mask rides in the carved depth, and it is deliberately TIGHT:
+	// only the bottom of a channel glows, so the light reads as coming from
+	// inside the rock rather than as paint smeared over the carving.
+	f.emissiveMask = smoothstep( 0.45, 0.86, depth );
 `,
   },
 ];

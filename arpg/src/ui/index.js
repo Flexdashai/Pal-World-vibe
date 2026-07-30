@@ -130,6 +130,12 @@ export class UiSystem {
     this._tmpPos = new THREE.Vector3();
     this._buffList = [];
     this._blips = [];
+    // Preallocated blip records: the minimap sync writes into these rather than
+    // building an object per actor per sample.
+    this._blipPool = Array.from({ length: 48 }, () => ({ x: 0, z: 0, type: 'enemy' }));
+    this._blipAccum = 0;
+    this._targetId = null;
+    this._bossId = null;
     this._hasWorldMap = false;
     this._exploreAccum = 0;
     this._sizeW = 1280;
@@ -349,12 +355,126 @@ export class UiSystem {
       });
     }
     if (e.crit) this.feed.push('crit', 'Critical', '', e.amount ?? 0);
+    if (e.target) this.noteTarget(e.target);
   }
 
   _onKill(e) {
     if (!e) return;
     const name = e.actor?.name ?? e.actor?.kind ?? 'Enemy';
     this.feed.push('kill', name, 'slain', e.overkill ?? 0);
+    // Let the next thing the player hits claim the bar immediately rather than
+    // waiting out the 5 s timeout on a corpse.
+    if (e.actor?.id !== undefined && e.actor.id === this._targetId) this._targetId = null;
+    if (e.actor?.id !== undefined && e.actor.id === this._bossId) { this._bossId = null; this.boss.hide(); this._layoutTop(); }
+  }
+
+  // =========================================================================
+  // public API — how `ai`, `combat` and `loot` drive the HUD
+  // =========================================================================
+
+  /**
+   * Show/refresh the enemy health bar for an ACTOR. Called automatically from
+   * every `combat:hit`, so `ai` and `combat` get a working target bar without
+   * doing anything at all; call it directly to show a bar for something the
+   * player has selected but not yet hit.
+   *
+   * Duck-typed on purpose — it reads `name`, `stats.{hp,hpMax,level}`, and the
+   * optional `rank` / `isBoss` / `title` / `phases` / `phase` / `affixes`, and
+   * degrades gracefully when any of them are missing.
+   */
+  noteTarget(a) {
+    if (this.disabled || this._posed || !a || a.isPlayer) return;
+    const st = a.stats ?? {};
+    const frac = st.hpMax > 0 ? clamp01(st.hp / st.hpMax) : 1;
+    const isBoss = a.isBoss === true || a.rank === 'boss';
+
+    if (isBoss) {
+      if (this._bossId !== a.id) {
+        this._bossId = a.id;
+        this.boss.show({
+          name: a.name ?? 'Nameless Thing',
+          title: a.title,
+          phases: a.phases ?? ['I', 'II', 'III'],
+          phase: a.phase ?? 0,
+          hpFrac: frac,
+        });
+        this._layoutTop();
+      } else {
+        this.boss.setFrac(frac);
+        if (typeof a.phase === 'number') this.boss.setPhase(a.phase, a.title);
+      }
+      return;
+    }
+
+    if (this._targetId !== a.id) {
+      this._targetId = a.id;
+      this.target.show({
+        name: a.name ?? 'Enemy',
+        level: st.level ?? 1,
+        rank: a.rank ?? 'normal',
+        hpFrac: frac,
+        affixes: a.affixes,
+      });
+    } else {
+      this.target.setFrac(frac);
+    }
+  }
+
+  /** Explicit boss control, for an encounter script that wants to name phases. */
+  setBoss(b) {
+    if (this.disabled) return;
+    if (!b) { this._bossId = null; this.boss.hide(); this._layoutTop(); return; }
+    this._bossId = b.id ?? 'boss';
+    this.boss.show(b);
+    this._layoutTop();
+  }
+
+  setBossPhase(i, title) { if (!this.disabled) this.boss.setPhase(i, title); }
+
+  clearTarget() { this._targetId = null; this.target.hide(); }
+
+  /** `list` is `[{ glyph, element, seconds, stacks }]`; the array is not copied. */
+  setBuffs(list) { if (!this.disabled) this._buffList = list ?? []; }
+
+  setShadows(count, max) {
+    if (this.disabled) return;
+    this.state.shadows = count;
+    this.state.shadowsMax = max ?? this.state.shadowsMax;
+    this.roster.set(this.state.shadows, this.state.shadowsMax);
+  }
+
+  /** Convenience wrappers so callers do not have to know the event names. */
+  pushSystem(win) { if (!this.disabled) this.system.push(win, this.ctx.time.raw); }
+  toast(text, tone) { if (!this.disabled) this.toasts.push(String(text), tone ?? ''); }
+  log(kind, name, suffix, value) { if (!this.disabled) this.feed.push(kind, name, suffix, value); }
+
+  /**
+   * Pull enemy positions off `ai` for the minimap. Duck-typed and optional: the
+   * map is complete without it. Runs at 3 Hz off a preallocated pool, because
+   * this is the only place in the subsystem that would otherwise allocate an
+   * object per actor per frame.
+   */
+  _syncBlips(dt) {
+    this._blipAccum += dt;
+    if (this._blipAccum < 0.33) return;
+    this._blipAccum = 0;
+    const ai = this.ctx.peek('ai');
+    const list = ai?.actors ?? ai?.enemies ?? null;
+    if (!Array.isArray(list) || list.length === 0) return;
+
+    this._blips.length = 0;
+    for (let i = 0; i < list.length && this._blips.length < this._blipPool.length; i++) {
+      const a = list[i];
+      if (!a || a.alive === false || !a.position) continue;
+      const b = this._blipPool[this._blips.length];
+      b.x = a.position.x;
+      b.z = a.position.z;
+      b.type = a.isShadow ? 'shadow'
+        : a.isBoss || a.rank === 'boss' ? 'boss'
+          : a.rank === 'elite' || a.rank === 'champion' ? 'elite' : 'enemy';
+      this._blips.push(b);
+    }
+    this.map.setBlips(this._blips);
   }
 
   // =========================================================================
@@ -410,6 +530,7 @@ export class UiSystem {
 
     // ---- minimap -----------------------------------------------------------
     this.map.setPlayer(this._playerPos.x, this._playerPos.z, this._playerFacing);
+    if (!this._posed) this._syncBlips(rdt);
     this._exploreAccum += rdt;
     if (this._hasWorldMap && this._exploreAccum > 0.20) {
       this._exploreAccum = 0;
@@ -689,6 +810,8 @@ export class UiSystem {
 
   _resetDebug() {
     this._posed = false;
+    this._targetId = null;
+    this._bossId = null;
     this._spawner = null;
     this._holdArise = false;
     this._buffList = [];

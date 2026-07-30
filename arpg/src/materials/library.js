@@ -106,7 +106,7 @@ export const PRESETS = {
   'wall.plaster': { surface: 'plaster', grime: 0.45, moss: 0.12 },
   'wall.marble': { surface: 'marble', grime: 0.2, dust: 0.12 },
   'wall.foundation': { surface: 'mortar', grime: 0.6, moss: 0.25, wet: 0.3 },
-  'wall.rune': { surface: 'runestone', grime: 0.35, moss: 0.08, emissive: 6.0 },
+  'wall.rune': { surface: 'runestone', grime: 0.35, moss: 0.08, emissive: 1.6 },
 
   'ceil.vault': { surface: 'vault', grime: 0.3, soot: 0.45, dust: 0.05 },
   'ceil.vaultSooted': { surface: 'vault', grime: 0.3, soot: 0.85 },
@@ -127,8 +127,8 @@ export const PRESETS = {
   'organic.bone': { surface: 'bone', grime: 0.35 },
 
   'arcane.obsidian': { surface: 'obsidian', grime: 0.1 },
-  'arcane.crystal': { surface: 'crystal', emissive: 9.0 },
-  'arcane.rune': { surface: 'runestone', emissive: 8.0, moss: 0.05 },
+  'arcane.crystal': { surface: 'crystal', emissive: 2.6 },
+  'arcane.rune': { surface: 'runestone', emissive: 2.2, moss: 0.05 },
 
   // Rubble, boulders and anything the generator rotates: no usable UVs.
   'rubble.stone': { surface: 'gravel', triplanar: true, grime: 0.45, moss: 0.15 },
@@ -224,8 +224,16 @@ export class MaterialLibrary {
       // real slope by the same factor.
       normalScale: (o.normalScale ?? 1.0) * Math.min(2.5, naturalTile / tile),
 
-      detailScale: o.detailScale ?? 3.0,
-      detailNormal: (o.detail ?? 1.0) * (o.detailNormal ?? 0.45),
+      // 1.3 repeats per metre, NOT the 3+ that "micro detail" suggests.
+      //
+      // The detail texture is 256 px, so at 1.3 repeats/m one of its texels is
+      // 3 mm and its features are 1-3 cm. At this camera — 116 screen pixels per
+      // world metre at the 'detail' boom, half that at the hero boom — anything
+      // finer than about 1.5 cm lands below two pixels, gets averaged away by
+      // the mip chain, and contributes nothing but cost. Tuned by capturing at
+      // 3.0 first, seeing a completely smooth stone face, and walking it down.
+      detailScale: o.detailScale ?? 1.3,
+      detailNormal: (o.detail ?? 1.0) * (o.detailNormal ?? 0.5),
       detailAlbedo: (o.detail ?? 1.0) * (o.detailAlbedo ?? 0.34),
       detailRough: (o.detail ?? 1.0) * (o.detailRough ?? 0.22),
       detailFadeNear: o.detailFadeNear ?? 14.0,

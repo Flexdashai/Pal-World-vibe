@@ -17,7 +17,8 @@
  *   bottom      plinth          full width ornament strip, 118 tall
  *   bottom 14   globes          148, inset 18 from each edge
  *   bottom 30   skill bar       6x58 slots + 2 round sockets, centred
- *   ~22% top    SYSTEM windows  448 wide, centred column
+ *   30% top     SYSTEM windows  430 wide, centred column
+ *   13% top     ARISE / LEVEL UP banner
  *
  * TYPOGRAPHY RULES, applied without exception:
  *   - Every label is uppercase, letterspaced 0.16-0.24em, 9-11px. Letterspacing
@@ -103,8 +104,8 @@ export function buildCss() {
    the effect disappears entirely behind the bottom HUD. */
 .mn-vig-arise {
   background:
-    radial-gradient(64% 50% at 50% 72%, ${alpha(violetHot, .44)} 0%, ${alpha(violet, .22)} 42%, rgba(0,0,0,0) 68%),
-    radial-gradient(135% 115% at 50% 46%, rgba(0,0,0,0) 30%, ${alpha('#3a17a8', .20)} 74%, ${alpha('#5a2ee0', .30)} 100%);
+    radial-gradient(66% 52% at 50% 72%, ${alpha(violetHot, .52)} 0%, ${alpha(violet, .28)} 42%, rgba(0,0,0,0) 70%),
+    radial-gradient(135% 115% at 50% 46%, rgba(0,0,0,0) 28%, ${alpha('#3a17a8', .26)} 72%, ${alpha('#5a2ee0', .38)} 100%);
   mix-blend-mode: screen;
 }
 /* Level-up: a gold blowout from the character's feet. */
@@ -735,7 +736,7 @@ export function buildCss() {
   box-shadow: inset 0 0 calc(6 * var(--u)) rgba(0,0,0,.95), inset 0 1px 0 ${alpha(BRASS.base, .28)};
 }
 .mn-cell canvas { position: absolute; inset: calc(2 * var(--u)); width: calc(100% - 4 * var(--u)); height: calc(100% - 4 * var(--u)); }
-.mn-cell.f { border-color: currentColor; box-shadow: inset 0 0 calc(11 * var(--u)) rgba(0,0,0,.9), 0 0 calc(8 * var(--u)) currentColor; }
+.mn-cell.f { border-color: currentColor; box-shadow: inset 0 0 calc(9 * var(--u)) rgba(0,0,0,.9), 0 0 calc(4 * var(--u)) currentColor; }
 .mn-cell .q {
   position: absolute; right: calc(2 * var(--u)); bottom: calc(1 * var(--u));
   font-size: calc(9 * var(--u)); font-weight: 700; color: ${TEXT.primary};
@@ -795,7 +796,8 @@ export function buildCss() {
 .mn-portrait canvas { width: calc(200 * var(--u)); height: calc(240 * var(--u)); }
 .mn-portrait .cls {
   margin-top: calc(10 * var(--u)); font-family: ${FONT.display};
-  font-size: calc(17 * var(--u)); letter-spacing: .26em; text-indent: .26em; text-transform: uppercase;
+  font-size: calc(15 * var(--u)); letter-spacing: .17em; text-indent: .17em; text-transform: uppercase;
+  white-space: nowrap;
   color: ${violetHot}; text-shadow: ${SHADOW_TEXT}, 0 0 calc(14 * var(--u)) ${alpha(violet, .8)};
 }
 .mn-portrait .lvl {

@@ -206,7 +206,7 @@ export class MaterialProbeScene {
     this._box(g, 6.2, 1.5, 0.5, M.get('wall.block', { moss: 0.3, grime: 0.5 }), 0, 3.0, -11.5);
 
     // ---- the rune slab: the parallax showcase -----------------------------
-    this._box(g, 1.8, 2.7, 0.34, M.get('wall.rune', { emissive: 7.0, moss: 0.05, grime: 0.3 }), -3.75, 1.5, -4.0);
+    this._box(g, 1.8, 2.7, 0.34, M.get('wall.rune', { emissive: 1.8, moss: 0.05, grime: 0.3 }), -3.75, 1.5, -4.0);
 
     // ---- brazier: iron under heavy soot, plus the key light ---------------
     this._box(g, 0.74, 0.34, 0.74, M.get('metal.brazier'), 3.0, 1.30, 1.2);
@@ -231,7 +231,7 @@ export class MaterialProbeScene {
     this._floor(g, 2.4, 2.0, M.get('floor.ossuary'), 2.4, 0.05, -5.0);
 
     const crystalGeo = this._track(new THREE.OctahedronGeometry(0.44, 0));
-    const crystal = this._add(g, crystalGeo, M.get('arcane.crystal', { emissive: 10.0, triplanar: true, tile: 0.7 }), 3.2, 0.55, -5.6);
+    const crystal = this._add(g, crystalGeo, M.get('arcane.crystal', { emissive: 2.8, triplanar: true, tile: 0.7 }), 3.2, 0.55, -5.6);
     crystal.userData.mnGlow = 1.3;
     this._light(g, LIGHTS.shadowRift.color, LIGHTS.shadowRift.intensity * 0.6, 6.5, 3.2, 0.85, -5.6);
 

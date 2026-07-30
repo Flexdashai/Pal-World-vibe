@@ -177,20 +177,27 @@ export function makeInventory(rng, count = 34) {
   return out;
 }
 
-/** The equipped set, one per doll slot. */
+/**
+ * The equipped set, one per doll slot.
+ *
+ * Two vertical columns of slots flanking the figure, plus head and feet on the
+ * centre line and the two weapon slots at the bottom of each column. Diablo's
+ * layout, and it works because the eye reads two clean columns rather than
+ * twelve boxes scattered around a shape.
+ */
 export const DOLL_SLOTS = [
-  { key: 'head', label: 'Head', x: 0.50, y: 0.02 },
-  { key: 'neck', label: 'Amulet', x: 0.80, y: 0.15 },
-  { key: 'shoulder', label: 'Shoulders', x: 0.20, y: 0.15 },
-  { key: 'chest', label: 'Chest', x: 0.50, y: 0.28 },
-  { key: 'hands', label: 'Gloves', x: 0.20, y: 0.41 },
-  { key: 'ring', label: 'Ring', x: 0.80, y: 0.41 },
-  { key: 'waist', label: 'Belt', x: 0.50, y: 0.54 },
-  { key: 'ring2', label: 'Ring', x: 0.80, y: 0.67 },
-  { key: 'legs', label: 'Legs', x: 0.20, y: 0.67 },
-  { key: 'feet', label: 'Boots', x: 0.50, y: 0.80 },
-  { key: 'weapon', label: 'Weapon', x: 0.06, y: 0.90 },
-  { key: 'offhand', label: 'Offhand', x: 0.94, y: 0.90 },
+  { key: 'head', label: 'Head', x: 0.50, y: 0.00 },
+  { key: 'shoulder', label: 'Shoulders', x: 0.13, y: 0.11 },
+  { key: 'neck', label: 'Amulet', x: 0.87, y: 0.11 },
+  { key: 'chest', label: 'Chest', x: 0.13, y: 0.26 },
+  { key: 'hands', label: 'Gloves', x: 0.87, y: 0.26 },
+  { key: 'waist', label: 'Belt', x: 0.13, y: 0.41 },
+  { key: 'ring', label: 'Ring', x: 0.87, y: 0.41 },
+  { key: 'legs', label: 'Legs', x: 0.13, y: 0.56 },
+  { key: 'ring2', label: 'Ring', x: 0.87, y: 0.56 },
+  { key: 'feet', label: 'Boots', x: 0.50, y: 0.86 },
+  { key: 'weapon', label: 'Weapon', x: 0.13, y: 0.71 },
+  { key: 'offhand', label: 'Offhand', x: 0.87, y: 0.71 },
 ];
 
 export function makeEquipment(rng) {
