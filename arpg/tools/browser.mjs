@@ -21,13 +21,31 @@ export const REPO = resolve(ROOT, '..');
 export const CHROME = process.env.MN_CHROME ?? '/opt/pw-browsers/chromium';
 export const DEFAULT_PORT = 5273;
 
+/**
+ * `--key=value` / `--flag` parsing.
+ *
+ * Deliberately NOT a regex. The previous version used
+ * `/^--([^=]+)(?:=(.*))?$/`, and `.` does not match a newline without the `s`
+ * flag — so any multi-line value (`--eval="$(cat expr.js)"`, which is the natural
+ * way to pass a non-trivial probe expression) failed to match at all. The
+ * fallback branch then stored the ENTIRE argument as a key with the value `true`,
+ * so `args.eval` came back undefined and the tool ran as if `--eval` had never
+ * been passed. It printed a clean, successful, empty result three times before
+ * the cause was obvious.
+ *
+ * Silent misparsing of an argument is worse than rejecting it, hence the throw.
+ */
 export function parseArgs(argv = process.argv.slice(2)) {
-  return Object.fromEntries(
-    argv.map((a) => {
-      const m = a.match(/^--([^=]+)(?:=(.*))?$/);
-      return m ? [m[1], m[2] ?? true] : [a, true];
-    })
-  );
+  const out = {};
+  for (const a of argv) {
+    if (!a.startsWith('--')) { out[a] = true; continue; }
+    const eq = a.indexOf('=');
+    if (eq === -1) { out[a.slice(2)] = true; continue; }
+    const key = a.slice(2, eq);
+    if (!key) throw new Error(`malformed argument: ${a.slice(0, 40)}`);
+    out[key] = a.slice(eq + 1);
+  }
+  return out;
 }
 
 export const portOpen = (port) =>
