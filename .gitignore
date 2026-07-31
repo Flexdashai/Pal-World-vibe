@@ -19,3 +19,6 @@ revcrops/
 arpg/shots/
 arpg/dist/
 .scratch/
+
+# Regenerate with: npm run arpg:build && node arpg/tools/bundle.mjs
+arpg/monarch.html

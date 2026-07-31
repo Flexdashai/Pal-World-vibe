@@ -109,17 +109,22 @@ export class Builder {
 /**
  * The material set for a room kind.
  *
- * `env` — the `envMapIntensity` multiplier — is doing the heaviest lifting in
- * this file and deserves its own note. The measured defect on the previous build
- * was "44% of the frame crushed to information-free black". Raising exposure
- * would lift the crushed pixels AND the lit ones and just grey the image; adding
- * more braziers measurably made it WORSE, because auto-exposure meters the frame
- * and stops down. The only lever that adds information to the dark half WITHOUT
- * touching the lit half is the indirect term, and because render's GTAO
- * multiplies indirect INSIDE the material, every crevice, column base and arch
- * soffit stays dark while the open floor picks up sky. That is what these
- * numbers are, and they are per room so a sealed crypt can still be genuinely
- * black next to a hall open to the night.
+ * Two things live here and nothing else: WHICH library recipe each logical
+ * surface resolves to, and how filthy the room is. Between them they are the
+ * biggest lever on whether two rooms feel like different places, because the
+ * shapes are all built from the same kit.
+ *
+ * `env` — the `envMapIntensity` multiplier — is carried through but is currently
+ * INERT: see the DRESS note in tuning.js for the measurement (1.6 vs 7 vs 300
+ * produced three captures `analyze.mjs` scored identically). It is kept correct
+ * so it starts working the day the indirect path does. The fill that actually
+ * reaches the frame is the hemisphere light in lighting.js, which lands in the
+ * same `reflectedLight.indirectDiffuse` term and is therefore multiplied by
+ * render's GTAO exactly as the env would have been.
+ *
+ * Every entry goes through `materials.get()`. Nothing in this subsystem builds
+ * a THREE material for a world surface except the coal (`__ember`) and the
+ * flame, neither of which the library has a recipe for.
  */
 export function materialsFor(kind, room) {
   const d = DRESS[kind] ?? DRESS.chamber;
@@ -325,7 +330,10 @@ export function buildCathedral(B, room) {
     yaw: DIAG_YAW, width: c * Math.SQRT2, height: tall * 0.82,
     span: gate.width, rise: ARCH.archRise, sill: 0, nx: -0.7, nz: -0.7, group: 'far',
   });
-  portcullis(B, { x: gate.x, z: gate.z, y: 0, width: gate.width - 0.25, height: 3.9, yaw: DIAG_YAW + Math.PI * 0.5 });
+  // The grille's local +X is its WIDTH, so it takes the wall's own yaw. At
+  // DIAG_YAW + PI/2 it stood edge-on in the opening — a row of bars seen from
+  // the side, which is invisible and useless.
+  portcullis(B, { x: gate.x, z: gate.z, y: 0, width: gate.width - 0.25, height: 3.9, yaw: DIAG_YAW });
   // Lighting the gate, which is the entire `depth` shot.
   //
   // The two great braziers stand WIDE of the opening, not in front of it: at
@@ -343,7 +351,11 @@ export function buildCathedral(B, room) {
   for (const s of [-1, 1]) {
     const sx = gate.x + s * 2.9 * Math.SQRT1_2 + DIR.screenDown[0] * 0.5;
     const sz = gate.z - s * 2.9 * Math.SQRT1_2 + DIR.screenDown[1] * 0.5;
-    sconce(B, { x: sx, y: 3.3, z: sz, yaw: DIAG_YAW + Math.PI, group: 'far' });
+    // `sconce`'s yaw is the direction the BRACKET REACHES, not the wall normal.
+    // The chamfer wall's outward normal points up-screen, so the bracket has to
+    // reach back into the hall — DIAG_YAW, not DIAG_YAW + PI, which buries the
+    // cup and its flame inside a metre of masonry where nothing can see it.
+    sconce(B, { x: sx, y: 3.3, z: sz, yaw: DIAG_YAW, group: 'far' });
   }
   // And a great brazier three metres THROUGH the gate, standing in the
   // processional. This is what makes the opening a bright hole in a dark wall
@@ -504,6 +516,26 @@ export function buildCathedral(B, room) {
   for (let i = 0; i < bays; i += 2) {
     const x = capsN[i].x + rng.range(-0.5, 0.5);
     sconce(B, { x, y: 3.1, z: minZ + 0.55, yaw: 0, group: 'far' });
+  }
+  // SCONCES ON THE PIERS THEMSELVES, facing into the nave.
+  //
+  // "Light placement should sculpt: rim-lighting the columns, silhouetting
+  // arches." A brazier standing on the floor lights a pier's plinth and leaves
+  // four metres of shaft in the dark, so the colonnade photographs as a row of
+  // black slots. A sconce bracketed to the pier at 3.2 m rakes UP the shaft and
+  // across the capital, and because it is on the nave face the far side of every
+  // pier stays black — which is the contrast that makes the row read as round.
+  //
+  // Alternated between the two arcades so the nave is lit from one side then the
+  // other down its length, never symmetrically.
+  for (let i = 1; i < bays; i++) {
+    const north = i % 2 === 1;
+    const cap = north ? capsN[i] : capsS[i];
+    const r = ARCH.columnRadius * 1.15;
+    sconce(B, {
+      x: cap.x, y: 3.15 + rng.range(-0.12, 0.12), z: cap.z + (north ? r : -r),
+      yaw: north ? 0 : Math.PI, group: north ? 'far' : 'near',
+    });
   }
 
   // --- 7. debris ------------------------------------------------------------
@@ -951,7 +983,7 @@ export function buildChamber(B, room) {
     ceilingSlab(B, { x: room.x - hw * 0.7, z: room.z, w: room.w * 0.3, d: room.d, y: 3.3, group: 'vault' });
   }
 
-  sconce(B, { x: room.x - hw + 0.35, y: 2.0, z: room.z, yaw: -Math.PI * 0.5, group: 'far' });
+  sconce(B, { x: room.x - hw + 0.35, y: 2.0, z: room.z, yaw: Math.PI * 0.5, group: 'far' });
   candleCluster(B, { x: room.x - hw * 0.4, z: room.z + hd * 0.35, count: rng.int(3, 6), radius: 0.55 });
   for (let i = 0; i < rng.int(1, 3); i++) {
     sarcophagus(B, {
@@ -1041,7 +1073,7 @@ export function buildUndercroft(B, room) {
   B.keepOut(room.x - hw + 1.8, room.z - hd + 1.8, 1.4);
   B.keepOut(room.x + hw * 0.5, room.z + hd - 2.0, 1.4);
   for (let i = 0; i < 2; i++) {
-    sconce(B, { x: room.x - hw + 0.35, y: y + 2.2, z: room.z + (i - 0.5) * room.d * 0.5, yaw: -Math.PI * 0.5, group: 'far' });
+    sconce(B, { x: room.x - hw + 0.35, y: y + 2.2, z: room.z + (i - 0.5) * room.d * 0.5, yaw: Math.PI * 0.5, group: 'far' });
   }
 
   dressDebris(B, room, { x: room.x, z: room.z, hw: hw - 1.5, hd: hd - 1.5, y, density: 0.8, bones: true });
@@ -1138,7 +1170,7 @@ export function buildPassage(B, room) {
   const n = Math.max(1, Math.round(L / 7));
   for (let i = 0; i < n; i++) {
     toWorld(room, -L * 0.5 + (L / n) * (i + 0.5), -W * 0.5 + 0.12, p);
-    sconce(B, { x: p.x, y: room.y + 1.7, z: p.z, yaw: room.yaw - Math.PI * 0.5, group: 'far' });
+    sconce(B, { x: p.x, y: room.y + 1.7, z: p.z, yaw: room.yaw, group: 'far' });
   }
   dressDebris(B, room, { x: room.x, z: room.z, hw: L * 0.4, hd: W * 0.3, y: room.y, density: 0.7, bones: true, shards: false });
   void rng;

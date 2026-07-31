@@ -238,10 +238,6 @@ export const AMBIENT = {
  * the placement rules, which are level design rather than colour identity.
  */
 export const LIGHTING = {
-  /** Height of a floor-standing brazier's flame above its base. */
-  brazierFlameY: 1.62,
-  /** Height of a wall sconce flame. */
-  sconceY: 2.45,
   /** Gain applied to `LIGHTS.brazier.intensity` for the three brazier classes.
    *  A great hall brazier is a bonfire; a corridor sconce is a candle stub. */
   gainGreat: 1.35,
@@ -264,9 +260,12 @@ export const LIGHTING = {
   moonPool: { intensity: 3.2, radius: 22.0, height: 3.0 },
 
   /**
-   * Minimum metres between two practicals of the same class. Enforced by the
-   * placer; a level whose braziers drifted together would read as one big
-   * uniform wash, which is the failure mode this whole section exists to avoid.
+   * The spacing every room builder is written to, in metres, between two
+   * practicals of the same class. It is a DESIGN RULE, not something the code
+   * enforces: every brazier in this level is placed by hand against something
+   * worth lighting — a sanctuary step, a pier base, a gate jamb — because a
+   * spacing constraint plus rejection sampling produces even coverage, and even
+   * coverage is exactly the failure this whole section exists to avoid.
    */
   minSpacing: 7.5,
   /** Never put a practical closer than this to a debug landmark: the shot

@@ -495,16 +495,12 @@ export class PlayerSystem {
     this.locomotion.moveEnabled = !committed;
     this.locomotion.readInput(ctx);
     this.locomotion.speedMul = this.stats.moveSpeedMul;
+    // Root motion from an attack: attacks lunge forward, and running that
+    // displacement through the character controller is what makes a lunge stop
+    // at a wall instead of sliding the hero into it.
+    this.locomotion.rootAdvance =
+      (committed && !this.locomotion.dashing) ? this.anim.rootMotionOut : 0;
     this.locomotion.step(h, ctx, this.anim);
-
-    // Root motion from an attack: attacks lunge forward, and moving through the
-    // controller is what makes a lunge stop at a wall.
-    if (committed && this.anim.rootMotionOut > 0 && !this.locomotion.dashing) {
-      const d = this.anim.rootMotionOut;
-      this._v.set(Math.sin(this.locomotion.yaw), 0, Math.cos(this.locomotion.yaw));
-      this.velocity.x += this._v.x * d / Math.max(1e-4, h);
-      this.velocity.z += this._v.z * d / Math.max(1e-4, h);
-    }
 
     this.stats.regen(h);
     this.army.prune(ctx.time.elapsed);

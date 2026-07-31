@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { ELEMENTS } from '../core/palette.js';
-import { STREAM, DRESS, clamp } from './tuning.js';
+import { STREAM, DRESS } from './tuning.js';
 import { generateLevel } from './layout.js';
 import { Builder, ROOM_BUILDERS, materialsFor } from './build.js';
 import { debrisGeometry } from './props.js';
@@ -605,5 +605,3 @@ export class WorldSystem {
     this.root?.parent?.remove(this.root);
   }
 }
-
-void clamp;

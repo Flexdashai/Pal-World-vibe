@@ -83,6 +83,11 @@ export class Locomotion {
     this.moveTarget = new THREE.Vector3();
     this.hasMoveTarget = false;
 
+    /** Metres of authored root motion to consume on the next step, set by the
+     *  player system from the animator. An attack's lunge goes through the
+     *  character controller like any other movement, so it stops at a wall. */
+    this.rootAdvance = 0;
+
     this.dashTime = 1e9;
     this.dashCooldown = 0;
     this.dashDir = new THREE.Vector3(0, 0, 1);
@@ -308,7 +313,20 @@ export class Locomotion {
         vel.z += (dz / dl) * step;
       }
       if (wanted > 0.05) this.yawTarget = Math.atan2(wx, wz);
+
+      // Authored root motion OVERRIDES the steering result rather than being
+      // added to it. Added-after was the first version and it was wrong twice
+      // over: the addition landed after `char.move` had already run, so a
+      // lunge took effect a step late, and the deceleration term then ate most
+      // of it on the way back. An attack's forward travel is authored in the
+      // clip and nothing else should be arguing with it.
+      if (this.rootAdvance > 1e-6) {
+        const speed = this.rootAdvance / h;
+        vel.x = Math.sin(this.yaw) * speed;
+        vel.z = Math.cos(this.yaw) * speed;
+      }
     }
+    this.rootAdvance = 0;
 
     // ---- facing ------------------------------------------------------------
     const moving = this.speed > 0.4;

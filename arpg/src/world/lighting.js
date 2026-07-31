@@ -44,17 +44,19 @@ import { LIGHTING, AMBIENT, clamp } from './tuning.js';
  * lit parts read." The classes below exist so a room can have a bonfire, a
  * hearth and a candle in it that differ by more than an order of magnitude:
  *
- *   brazierGreat  35 cd  r 13   a signpost. Two or three per room, never more.
- *   brazier       26 cd  r 11   the workhorse.
- *   sconce         7.8 cd r 5.5 defines a wall plane, lights nothing else.
- *   candle         3.2 cd r 4   a warm point for the eye, not illumination.
- *   moonPool       5.2 cd r 17  COLD fill under a hole in the roof.
- *   shadowRift    10 cd   r 9   the shrine's violet, the signature colour.
+ *   brazierGreat  35 cd  r 13    a signpost. Two or three per room, never more.
+ *   brazier       26 cd  r 11    the workhorse.
+ *   sconce        12 cd   r 5.5  rakes a wall plane or a pier shaft; lights
+ *                                nothing beyond about two metres.
+ *   candle         3.2 cd r 4    a warm point for the eye, not illumination.
+ *   moonPool       3.2 cd r 22   COLD, wide, low fill under a hole in the roof.
+ *   shadowRift    10 cd   r 9    the shrine's violet, the signature colour.
  *
- * The cold `moonPool` class is doing double duty: it is the only light in the
- * game that is not fire, so it is what keeps the frame's luminance-weighted
- * saturation down. Adding cold light lowers it; removing warm light would too,
- * but it would also remove the art direction.
+ * The cold `moonPool` class is doing double duty: it and the hemisphere fill are
+ * the only lights in the game that are not fire, so they are what keeps the
+ * frame's luminance-weighted saturation down. Adding cold light lowers it;
+ * removing warm light would too, but it would also remove the art direction.
+ * Measured across the rewrite: 0.346 -> 0.271 against a 0.30 target.
  */
 
 /** Class table. `gain` multiplies the palette intensity; `radius` overrides it. */

@@ -39,7 +39,6 @@ const _v2 = new THREE.Vector3();
 const _n = new THREE.Vector3();
 const _t = new THREE.Vector3();
 const _up = new THREE.Vector3(0, 1, 0);
-const _m3 = new THREE.Matrix3();
 
 // ===========================================================================
 // core buffer utilities

@@ -339,9 +339,15 @@ export function generateLevel(rng, seed) {
       snap(mouthZ + DIR.screenDown[1] * Math.min(13, cryptLen * 0.55), 0.5),
     ],
 
-    // Just inside the gate, on the processional axis. The portcullis frames the
-    // top of the shot and the whole 28 m of colonnade runs away up-screen to the
-    // arena mouth.
+    // Just inside the gate, on the processional axis.
+    //
+    // Honest about what "a long sightline" can mean at a −52 degree pitch: the
+    // ground is only visible about 13 m up-screen of the focus at the `depth`
+    // boom, so a 28 m colonnade does NOT recede to a vanishing point — it leaves
+    // the top of the frame after four bays. What the shot actually delivers is a
+    // nine-metre wall of masonry with a lit hole in it at 40% frame height, the
+    // portcullis hanging in that hole, and a brazier three metres beyond it, so
+    // the eye reads depth from the value break rather than from perspective.
     gate: [snap(gateX + DIR.screenDown[0] * 3.2, 0.5), 0, snap(gateZ + DIR.screenDown[1] * 3.2, 0.5)],
 
     // The near lip of the arena floor, so the sunken ring, the broken angel and
