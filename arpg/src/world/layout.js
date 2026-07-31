@@ -136,7 +136,10 @@ export function generateLevel(rng, seed) {
   })));
   // Nave / aisle division. The nave is the lit centre; the aisles are the dark
   // flanks whose arcades are the room's silhouette.
-  hall.naveHalf = snap(clamp(hallD * 0.28, 5, 7), 0.5);
+  // A ten-metre nave, not fourteen. Wider than this and the two arcades fall
+  // outside a 26 m frame at the hero boom, and the shot becomes a field of
+  // floor with architecture at its edges.
+  hall.naveHalf = snap(clamp(hallD * 0.235, 4.4, 5.4), 0.2);
   hall.naveZ = hall.z;
   // The canted corner carrying the gate to the processional way. This is the
   // whole reason the boss approach can be photographed down its own axis.

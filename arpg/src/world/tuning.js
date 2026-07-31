@@ -189,10 +189,12 @@ export const DRESS = {
  */
 export const AMBIENT = {
   /** Base irradiance of the hemisphere light. Against the moon key's ~0.29
-   *  this is roughly a quarter, i.e. two stops down — the ratio an interior
-   *  open to a night sky actually measures. Tuned by capture: at 0.35 the
-   *  crypt stopped being frightening, at 0.05 the shadows were still holes. */
-  base: 0.16,
+   *  this is roughly half, i.e. one stop down. That sounds high for ambient and
+   *  it is not: auto-exposure meters the frame and stops down by most of
+   *  whatever is added, so the fill has to be large in scene units to move the
+   *  DARK pixels at all. Measured: 0.16 moved `analyze.mjs`'s crushed fraction
+   *  by under one point. Above ~0.45 the crypt stops being frightening. */
+  base: 0.30,
   /** How much of `base` each room kind gets. A sealed crypt has no sky and only
    *  its own firelight to bounce; a hall with half its vault gone has both. */
   perKind: {

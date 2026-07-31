@@ -361,7 +361,10 @@ export function buildCathedral(B, room) {
   ironGate(B, { x: maxX - 0.2, z: cryptDoor.z, y: 0, width: cryptDoor.width - 0.2, height: 2.9, yaw: Math.PI * 0.5 });
 
   // --- 3. the two arcades ---------------------------------------------------
-  const bays = clamp(Math.round((maxX - minX - 8) / rng.range(4.6, 5.6)), 4, 7);
+  // Bay width ~3.6 m. Gothic naves run 4-5 m, but the pier is the unit the eye
+  // counts and a denser rhythm is what makes a colonnade read as one object
+  // at 24 m rather than as four separate pillars.
+  const bays = clamp(Math.round((maxX - minX - 8) / rng.range(3.3, 3.9)), 5, 9);
   const arcX0 = minX + 8.4, arcX1 = maxX - 1.4;
 
   // North arcade: complete, with a clerestory wall above and a vaulted aisle
@@ -466,12 +469,15 @@ export function buildCathedral(B, room) {
   // between them, each placed against something worth lighting: a column base,
   // the sanctuary steps, the rubble pile. Never a grid.
   const naveLights = [
-    { x: sancX + 4.0, z: room.naveZ - room.naveHalf * 0.60, kind: 'great' },
+    // ON the sanctuary dais, beside the altar: the vanishing point of the hero
+    // shot has to be the brightest thing in it or the eye has nowhere to go.
+    { x: sancX + 1.6, z: room.naveZ - room.naveHalf * 0.62, y: 0.92, kind: 'great' },
+    { x: sancX + 4.0, z: room.naveZ + room.naveHalf * 0.62, kind: 'standard' },
     { x: room.x - 4.5, z: room.naveZ + room.naveHalf * 0.62, kind: 'standard' },
     { x: room.x + 3.0, z: room.naveZ - room.naveHalf * 0.55, kind: 'great' },
     { x: maxX - 5.0, z: room.naveZ + room.naveHalf * 0.50, kind: 'standard' },
   ];
-  for (const l of naveLights) { brazier(B, { x: l.x, z: l.z, kind: l.kind }); B.keepOut(l.x, l.z, 1.5); }
+  for (const l of naveLights) { brazier(B, { x: l.x, y: l.y ?? 0, z: l.z, kind: l.kind }); B.keepOut(l.x, l.z, 1.5); }
   // Sconces on the north aisle wall, low and dim: they define the wall plane
   // without competing with the braziers for the eye.
   for (let i = 0; i < bays; i += 2) {
@@ -481,6 +487,14 @@ export function buildCathedral(B, room) {
 
   // --- 7. debris ------------------------------------------------------------
   dressDebris(B, room, { x: room.x, z: room.z, hw: room.w * 0.46, hd: room.d * 0.46, y: 0, density: 1.0, bones: false });
+  // Lifted paving in the nave: flat slabs tipped out of the floor by
+  // subsidence. Nearly free (they are the `slab` instance kind) and they are
+  // what stops the middle of the hero shot being an empty grey plane.
+  scatter(B, {
+    mat: 'wall', kind: 'slab', count: rng.int(14, 26),
+    x: room.x, z: room.naveZ, hw: room.w * 0.42, hd: room.naveHalf * 0.95,
+    y: 0, lift: -0.06, scale: [0.6, 1.5], upright: true, avoid: B.avoid,
+  });
   for (let i = 0; i < rng.int(2, 5); i++) {
     brokenWeapon(B, {
       x: room.x + rng.range(-room.w * 0.35, room.w * 0.35),

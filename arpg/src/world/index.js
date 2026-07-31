@@ -209,7 +209,7 @@ export class WorldSystem {
         ELEMENTS.fire.core[0], ELEMENTS.fire.core[1], ELEMENTS.fire.core[2],
         THREE.LinearSRGBColorSpace
       ),
-      emissiveIntensity: 0.30,
+      emissiveIntensity: 0.20,
       roughness: 0.86,
       metalness: 0.0,
     });

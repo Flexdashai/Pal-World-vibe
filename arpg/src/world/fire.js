@@ -502,9 +502,16 @@ export function brazier(B, o) {
     gain: kind === 'great' ? 1.15 : 1.0,
     phase: rng.range(0, 100),
   });
+  // The light sits at the MIDDLE OF THE FLAME, clear of the bowl rim.
+  //
+  // It was inside the bowl first, and inverse-square did the rest: at 25 cm the
+  // iron got 26/0.06 = 400x the irradiance the floor 3 m away did, so every
+  // brazier in the level photographed as a white mushroom with a fire on it. A
+  // real brazier's light comes from the flame, which stands proud of the vessel,
+  // and putting it there fixes the vessel without touching the pool on the floor.
   B.light({
     kind: kind === 'great' ? 'brazierGreat' : 'brazier',
-    x: o.x, y: (o.y ?? 0) + flameY + 0.10, z: o.z,
+    x: o.x, y: (o.y ?? 0) + flameY + (kind === 'great' ? 0.55 : 0.38) * scale, z: o.z,
     phase: rng.range(0, 100), rate: rng.range(0.70, 1.20),
   });
 }
@@ -518,7 +525,7 @@ export function sconce(B, o) {
   const cy = Math.cos(o.yaw ?? 0), sy = Math.sin(o.yaw ?? 0);
   const fx = o.x + sy * 0.31, fz = o.z + cy * 0.31;
   B.flame({ x: fx, y: o.y + 0.34, z: fz, height: 0.30, radius: 0.085, gain: 0.85, phase: rng.range(0, 100) });
-  B.light({ kind: 'sconce', x: fx, y: o.y + 0.40, z: fz, phase: rng.range(0, 100), rate: rng.range(0.8, 1.4) });
+  B.light({ kind: 'sconce', x: fx, y: o.y + 0.52, z: fz, phase: rng.range(0, 100), rate: rng.range(0.8, 1.4) });
 }
 
 /** A candelabrum with N lit candles. One light for the whole stand — N point
