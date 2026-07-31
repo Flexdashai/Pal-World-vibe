@@ -378,18 +378,22 @@ function buildCuirass(rig, B) {
     },
   });
 
-  // Sternum sigil — a violet diamond, the Monarch's mark. Small (7 cm) but it
-  // is dead centre of the chest and it is the first thing bloom finds.
+  // Sternum sigil — a violet diamond, the Monarch's mark. Dead centre of the
+  // chest, so it is the first thing the bloom pyramid finds; at 8 cm across it
+  // haloed the whole cuirass into a grey smear in the 720p capture, and it is
+  // now 5 cm with a hollow centre. Two thin chevrons read as a mark; a solid
+  // lozenge reads as a lamp.
   torsoRadius(0.62, 0, _p);
   _p.y = TORSO_Y0 + (TORSO_Y1 - TORSO_Y0) * 0.62;
   _p.z += 0.030;
-  B.trim.fan(
-    _p,
-    _q.set(1, 0, 0), _r.set(0, 1, -0.22).normalize(),
-    [[0, 0.042], [0.020, 0.012], [0.030, 0], [0.020, -0.012], [0, -0.046],
-      [-0.020, -0.012], [-0.030, 0], [-0.020, 0.012]],
-    1
-  );
+  _q.set(1, 0, 0);
+  _r.set(0, 1, -0.22).normalize();
+  for (const [yOff, w, h] of [[0.012, 0.021, 0.020], [-0.020, 0.015, 0.014]]) {
+    B.trim.fan(_p, _q, _r,
+      [[0, yOff + h], [w, yOff], [w * 0.55, yOff - h * 0.35], [0, yOff + h * 0.30],
+        [-w * 0.55, yOff - h * 0.35], [-w, yOff]],
+      1);
+  }
 }
 
 function buildBelt(rig, B) {

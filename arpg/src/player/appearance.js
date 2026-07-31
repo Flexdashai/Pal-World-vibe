@@ -57,14 +57,14 @@ const CHAR_BASE = {
   // The hero is lit by braziers 4-10 m away and by his own rim light; the env
   // contribution is what keeps him from going to pure black in between.
   //
-  // 1.9, not 1.0. The measured build crushes 44.8% of the frame to
+  // 2.6, not 1.0. The measured build crushes 44.8% of the frame to
   // information-free black and the hero spends most of a run in that part of
   // it. Raising EXPOSURE to fix that would lift the whole image and destroy the
   // crypt; raising the SUBJECT's indirect response lifts only the subject. It is
   // also defensible physically: black plate has a strong Fresnel response and
   // a real one in a dark room is visible almost entirely through what it
   // reflects, which is exactly the env term.
-  envMapIntensity: 1.9,
+  envMapIntensity: 2.6,
   dust: 0.0,
 };
 
@@ -89,23 +89,31 @@ export function buildAppearance(ctx) {
   // `steel` baked at a 0.34 m tile: the forge's steel recipe has ~4 cm features,
   // so at this tile they land at ~9 mm on the armour — hammer planishing scale,
   // which is right for a cuirass and reads as texture rather than as noise.
-  // Tint is a cold near-black; real blackened plate is about 4% reflectance.
   byKey.plate = m.get('steel', {
     ...CHAR_BASE,
     tile: 0.34,
-    // 0.075 rather than the 0.052 of the first pass. Blackened steel is around
-    // 6-8% reflectance in reality; the darker value was inside the physical
-    // range but put the whole figure below the point where the tone curve has
-    // any gradient left, and the character rendered as a hole.
-    tint: [0.075, 0.080, 0.100],
+    // For a metal, `tint` IS F0 — the reflectance at normal incidence — so this
+    // is the single most effective dial on how bright the armour reads, and
+    // unlike adding a light it has NO effect on anything else in the room.
+    //
+    // That matters more than it sounds. `sky` feeds its volumetric march and its
+    // ground mist from the two highest-scoring point lights, scored as
+    // intensity/(1+d²) about the camera focus — which is the player. Any light
+    // attached to the hero therefore displaces both braziers AND lights the fog
+    // volume directly in front of the hero's chest; a capture with a strong
+    // character fill showed a white cloud where the cuirass should be. Pushing
+    // reflectance instead of pushing photons brightens the subject and nothing
+    // else. 0.14-0.16 is dark tarnished steel, comfortably inside the 0.02-0.9
+    // physical range.
+    tint: [0.155, 0.162, 0.196],
     // 0.46 multiplier on the baked ORM. Polished plate is the only thing on the
     // hero that produces a hard specular, and that highlight is what draws the
     // armour's shape in a dark room — but at 0.36 the lobe was tight enough
     // that the rim light produced a single blown disc on the pauldron instead
     // of a moving edge highlight. 0.46 spreads it over the whole lame.
-    roughness: 0.46,
+    roughness: 0.44,
     metalness: 1.0,
-    roughHint: 0.34,
+    roughHint: 0.32,
     metalHint: 1.0,
     grime: 0.26,
     soot: 0.28,
@@ -120,8 +128,8 @@ export function buildAppearance(ctx) {
   byKey.plateDark = m.get('iron', {
     ...CHAR_BASE,
     tile: 0.28,
-    tint: [0.048, 0.050, 0.062],
-    roughness: 0.62,
+    tint: [0.098, 0.102, 0.124],
+    roughness: 0.60,
     metalness: 1.0,
     roughHint: 0.44,
     metalHint: 1.0,
@@ -135,8 +143,8 @@ export function buildAppearance(ctx) {
   byKey.leather = m.get('leather', {
     ...CHAR_BASE,
     tile: 0.30,
-    tint: [0.058, 0.048, 0.048],
-    roughness: 0.92,
+    tint: [0.082, 0.068, 0.066],
+    roughness: 0.90,
     metalness: 0,
     roughHint: 0.62,
     metalHint: 0,
@@ -155,7 +163,7 @@ export function buildAppearance(ctx) {
     // Black wool is ~4.5% reflectance. Below about 0.04 the coat and the
     // unlit floor become the same pixel value and the hero's whole lower half
     // stops existing between braziers.
-    tint: [0.046, 0.044, 0.058],
+    tint: [0.062, 0.059, 0.076],
     roughness: 0.92,
     metalness: 0,
     roughHint: 0.82,
@@ -173,7 +181,7 @@ export function buildAppearance(ctx) {
   byKey.lining = m.get('banner', {
     ...CHAR_BASE,
     tile: 0.22,
-    tint: [0.085, 0.045, 0.30],
+    tint: [0.105, 0.055, 0.34],
     roughness: 0.86,
     metalness: 0,
     roughHint: 0.74,
@@ -214,7 +222,7 @@ export function buildAppearance(ctx) {
   byKey.hair = m.get('banner', {
     ...CHAR_BASE,
     tile: 0.10,
-    tint: [0.020, 0.019, 0.026],
+    tint: [0.032, 0.030, 0.041],
     roughness: 0.58,
     metalness: 0,
     roughHint: 0.44,
@@ -240,7 +248,10 @@ export function buildAppearance(ctx) {
     // 2.6 nits-ish against a scene whose brazier key is ~26 cd. High enough to
     // survive bloom thresholding, low enough that it does not blow to white and
     // lose its hue — the failure mode the braziers currently have.
-    emissiveIntensity: 2.6,
+    // 2.0, not 2.6: at the higher value the ribbon's core clipped to white and
+    // only its bloom halo stayed violet, which is precisely backwards — the
+    // signature colour has to be in the light itself, not in the glow around it.
+    emissiveIntensity: 2.0,
     toneMapped: true,
   });
   byKey.trim = trim;
@@ -256,7 +267,7 @@ export function buildAppearance(ctx) {
     roughness: 1.0,
     metalness: 0,
     emissive: lin(shadowGlow[0], shadowGlow[1], shadowGlow[2]),
-    emissiveIntensity: 9.0,
+    emissiveIntensity: 6.5,
     toneMapped: true,
   });
   byKey.eyes = eyes;

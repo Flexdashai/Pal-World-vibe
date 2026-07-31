@@ -120,8 +120,12 @@ export class PlayerSystem {
       mesh.frustumCulled = false;
       mesh.bindMode = THREE.AttachedBindMode;
       mesh.bind(this.rig.skeleton, bindMatrix);
-      if (key === 'trim') mesh.userData.mnGlow = 2.0;
-      if (key === 'eyes') mesh.userData.mnGlow = 3.4;
+      // `mnGlow` multiplies emissive radiance into render's bloom-only buffer.
+      // 1.35 rather than 2.0: at the higher value the trim's own emissive
+      // (already 2.0) landed at 4.0 radiance on a 7 mm ribbon and bloomed into
+      // a halo wide enough to erase the armour underneath it.
+      if (key === 'trim') mesh.userData.mnGlow = 1.35;
+      if (key === 'eyes') mesh.userData.mnGlow = 2.6;
       this.root.add(mesh);
       this.meshes.push(mesh);
       this._geometries.push(geo);

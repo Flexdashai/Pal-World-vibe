@@ -201,12 +201,18 @@ export const AMBIENT = {
     cathedral: 1.15,
     processional: 1.25,
     arena: 1.10,
-    corridor: 0.42,
-    chamber: 0.40,
-    ossuary: 0.45,
-    undercroft: 0.62,
-    shrine: 0.66,
-    passage: 0.34,
+    // The sealed rooms get roughly half of what the open ones do, not a tenth.
+    // Measured on the crypt corridor at 0.42: `analyze.mjs` read 45% of the
+    // frame crushed, which is past the point where darkness stops being
+    // atmosphere and starts being a hole. Their fill is standing in for
+    // firelight bouncing off their own walls rather than for sky, which is why
+    // the ground half of the hemisphere is warm.
+    corridor: 0.60,
+    chamber: 0.56,
+    ossuary: 0.60,
+    undercroft: 0.74,
+    shrine: 0.80,
+    passage: 0.52,
   },
   /** Seconds for the fill to cross-fade when the player changes room. Slow, on
    *  purpose: it is standing in for an eye adapting, and a step change reads as
@@ -240,7 +246,7 @@ export const LIGHTING = {
    *  A great hall brazier is a bonfire; a corridor sconce is a candle stub. */
   gainGreat: 1.35,
   gainStandard: 1.0,
-  gainSconce: 0.30,
+  gainSconce: 0.46,
   gainCandle: 1.0,
 
   /**

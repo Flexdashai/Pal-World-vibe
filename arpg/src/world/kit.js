@@ -515,6 +515,14 @@ export function barrelVault(B, o) {
   const seg = o.segments ?? 9;
   const mat = o.mat ?? B.mat.vault;
   const group = o.group ?? 'vault';
+  // SEGMENTAL, not semicircular. A true half-round barrel over a 5 m corridor
+  // puts its crown at 2.5 m above the springing, which is a metre higher than
+  // the corridor is supposed to be, and at this camera the transverse ribs of
+  // that arch read as a row of black bars laid across the floor rather than as
+  // a ceiling. Real crypt vaults are segmental for the same structural reason
+  // they are here: less height for the same span.
+  const rise = o.rise ?? width * 0.32;
+  const squash = rise / (width * 0.5);
 
   // Half-cylinder, open ended, wound to be seen from below.
   const cyl = new THREE.CylinderGeometry(width * 0.5, width * 0.5, length, seg, 1, true, 0, Math.PI);
@@ -531,6 +539,8 @@ export function barrelVault(B, o) {
   }
   p.needsUpdate = true;
   flipped.computeVertexNormals();
+  flipped.scale(1, squash, 1);
+  flipped.computeVertexNormals();
   B.push(mat, group, flipped, matAt(o.x, springY, o.z, o.yaw ?? 0));
 
   // Transverse ribs every `ribEvery` metres, each a shallow arch under the web.
@@ -538,7 +548,9 @@ export function barrelVault(B, o) {
   const n = Math.max(1, Math.round(length / every));
   for (let i = 0; i <= n; i++) {
     const t = -length * 0.5 + (length * i) / n;
-    const rib = ribGeo(width * 1.02, 1.0, 0.24, 0.30, 6);
+    // Rib rise matches the web it follows, and the section is slim: a 24 cm
+    // rib on a 5 m span is a girder, and from above it is a bar.
+    const rib = ribGeo(width * 1.02, squash * 1.04, 0.15, 0.26, 7);
     if (!rib) continue;
     _e.set(0, o.yaw ?? 0, 0);
     _q.setFromEuler(_e);

@@ -27,13 +27,24 @@ import { makeAdditiveMaterial } from './appearance.js';
  *     near-monochrome.
  *
  * ---------------------------------------------------------------------------
- * LIGHT BUDGET
+ * LIGHT BUDGET, AND THE CROSS-SUBSYSTEM TRAP
  *
- * Exactly ONE punctual light, registered with `render.addLight` so it
- * participates in the fixed slot mechanism. The rig never adds or removes it —
- * it drives `intensity` instead, including to zero — because the visible light
+ * TWO punctual lights, both registered with `render.addLight` so they
+ * participate in the fixed slot mechanism. Neither is ever added or removed —
+ * only their `intensity` moves, including to zero — because the visible light
  * COUNT is a shader permutation key and toggling `visible` would recompile every
  * lit material in the scene (ARCHITECTURE.md, "The visible point-light count").
+ *
+ * They are also deliberately WEAK and SHORT-RANGE, and that is not a rendering
+ * decision, it is an interoperability one. `sky` feeds its volumetric march and
+ * its ground mist from the two highest-scoring point lights in the scene, scored
+ * as `intensity / (1 + d²)` about the camera focus — and the camera focus is the
+ * player. Anything bright bolted to the hero therefore (a) displaces both
+ * braziers from the fog solution and (b) lights the fog volume standing directly
+ * between the camera and the hero's chest. A capture with a strong character
+ * fill produced exactly that: a white cloud where the cuirass should be. The
+ * brightness the hero needs is bought in `appearance.js` instead, by raising
+ * reflectance, which no other subsystem can see.
  */
 
 const SHADOW = ELEMENTS.shadow;
@@ -67,14 +78,17 @@ export class MonarchAura {
     const rim = LIGHTS.playerRim;
     this.light = new THREE.PointLight(
       new THREE.Color().setRGB(rim.color[0], rim.color[1], rim.color[2], THREE.LinearSRGBColorSpace),
-      rim.intensity * 6.6,
-      // 5.6 m of reach, not 7.5. The extra two metres bought nothing on the
-      // hero (they are 2.4 m from the source at most) and spilled a visible
-      // violet pool onto the wall behind them.
-      5.6,
+      rim.intensity * 4.2,
+      // 3.6 m of reach, not 7.5. Both hero lights are deliberately SHORT-RANGE
+      // and HIGH, and the reason is `sky`'s ground mist: a long-reach light near
+      // the floor lit the fog volume between the camera and the hero into a
+      // white cloud that covered them from the waist down. Three's distance
+      // window falls off as (1 − (d/D)⁴)², so pulling D in from 7.5 to 3.6 costs
+      // the head 4% and costs the fog at the hero's feet 60%.
+      3.6,
       2.0   // physically correct inverse-square falloff
     );
-    this.light.position.set(0, 2.35, -1.05);
+    this.light.position.set(0, 2.30, -0.95);
     this.light.castShadow = false;   // the key light already casts; two is noise
     this.light.name = 'mn.player.rim';
     this.group.add(this.light);
@@ -95,25 +109,29 @@ export class MonarchAura {
     // Cold and desaturated on purpose: the brazier key is warm, the rim is
     // violet, and a third saturated colour would push the frame's
     // luminance-weighted saturation further over the 0.30 target it is already
-    // above. Two slots out of eight is a real cost to the brazier budget, and
-    // it is the right trade — the hero is the subject of every frame in the
-    // game and 44.8% of that frame is measured as information-free black.
+    // above.
     //
-    // Reach is deliberately short (4.2 m) and the source sits high. A fill with
-    // a long reach lit the flagstones for two metres around the hero and, worse,
-    // ignited `sky`'s ground mist into a white cloud at their feet. High and
-    // near gives a 3.8:1 ratio between the hero's chest and the floor they are
-    // standing on, so the crypt stays dark and only the subject lifts.
+    // Reach is 3 m and the source sits 2.15 m up, which puts the floor at the
+    // hero's feet outside the distance window entirely while the chest sits at
+    // 0.9 m. The crypt stays dark; only the subject lifts.
+    //
+    // The offset is pushed OFF THE SILHOUETTE rather than straight toward the
+    // camera. `sky`'s volumetric march puts a soft glow ball at every point
+    // light, and with the fill directly camera-side of the hero that ball
+    // projected onto their chest and washed the cuirass out. Dotted with the
+    // camera's right vector (cos45, 0, −sin45) this offset lands ~0.9 m to
+    // screen-right and above, so the glow sits beside the hero instead of on
+    // them and still fills the camera-facing planes of the armour.
     this.fill = new THREE.PointLight(
-      new THREE.Color().setRGB(0.30, 0.33, 0.46, THREE.LinearSRGBColorSpace),
-      11.0, 4.2, 2.0
+      new THREE.Color().setRGB(0.26, 0.29, 0.42, THREE.LinearSRGBColorSpace),
+      4.2, 3.0, 2.0
     );
     this.fill.castShadow = false;
     this.fill.name = 'mn.player.fill';
     ctx.scene.add(this.fill);
     ctx.get('render').addLight(this.fill);
-    this.fillBase = 11.0;
-    this._fillOffset = new THREE.Vector3(0.85, 2.25, 0.85);
+    this.fillBase = 4.2;
+    this._fillOffset = new THREE.Vector3(1.25, 2.15, 0.02);
 
     // ---- ground ring -------------------------------------------------------
     // A flat annulus, faintly hot at the inner edge. Drawn additive with no
@@ -135,14 +153,21 @@ export class MonarchAura {
     this.group.add(this.ring);
 
     // ---- column ------------------------------------------------------------
-    // Two nested open cylinders with reversed winding, so the column reads as a
-    // volume of light rather than as a tube. Vertical UV fade is baked into the
-    // geometry's vertex colours because an additive material with a texture
-    // would need a texture, and everything here is generated.
-    const colGeo = buildColumn(1.05, 4.6, 26, 8);
+    //
+    // BACK FACES ONLY. This is the whole design of the piece.
+    //
+    // The first version was two nested double-sided shells: four layers of
+    // additive violet between the camera and the hero, which at power 1.0 turned
+    // the ARISE frame — the frame this game most needs to be good — into a
+    // white cone with a person somewhere inside it. Rendering only back faces
+    // draws just the FAR wall of the cylinder, so the column stands BEHIND the
+    // hero and their silhouette cuts into it. That is also what the reference
+    // actually looks like.
+    const colGeo = buildColumn(0.78, 3.6, 26, 9);
     this._geo.push(colGeo);
     this.columnMat = makeAdditiveMaterial('auraColumn', SHADOW.core, 0.0);
     this.columnMat.vertexColors = true;
+    this.columnMat.side = THREE.BackSide;
     this._mat.push(this.columnMat);
     this.column = new THREE.Mesh(colGeo, this.columnMat);
     this.column.frustumCulled = false;
@@ -158,7 +183,10 @@ export class MonarchAura {
     // done by rotating the parent, not by moving vertices.
     const glyphGeo = buildGlyphRing(rng, 6, 1.15);
     this._geo.push(glyphGeo);
-    this.glyphMat = makeAdditiveMaterial('auraGlyphs', SHADOW.light, 0.0);
+    // `core` rather than `light`: additive blending saturates the blue channel
+    // first, so the near-pure-blue core stays violet as it stacks and blooms,
+    // where the pastel `light` washes straight to white.
+    this.glyphMat = makeAdditiveMaterial('auraGlyphs', SHADOW.core, 0.0);
     this._mat.push(this.glyphMat);
     this.glyphs = new THREE.Mesh(glyphGeo, this.glyphMat);
     this.glyphs.position.y = 1.05;
@@ -233,17 +261,17 @@ export class MonarchAura {
     this.ring.scale.set(s, 1, s);
 
     // ---- column + glyphs ---------------------------------------------------
-    const colA = Math.max(0, p * 0.30 + flash * 0.16 - 0.012);
+    const colA = Math.max(0, p * 0.42 + flash * 0.20 - 0.012);
     this.column.visible = colA > 0.004;
     if (this.column.visible) {
       this.columnMat.opacity = colA;
-      const cs = 0.55 + p * 0.6;
-      this.column.scale.set(cs, 0.75 + p * 0.55, cs);
+      const cs = 0.72 + p * 0.42;
+      this.column.scale.set(cs, 0.80 + p * 0.45, cs);
       // Counter-rotate against the glyphs so the two layers shear.
       this.column.rotation.y = -this.time * 0.35;
     }
 
-    const glyA = Math.max(0, p * 0.85 + flash * 0.35 - 0.02);
+    const glyA = Math.max(0, p * 0.95 + flash * 0.35 - 0.02);
     this.glyphs.visible = glyA > 0.004;
     if (this.glyphs.visible) {
       this.glyphMat.opacity = glyA;
@@ -266,11 +294,15 @@ export class MonarchAura {
 }
 
 /**
- * An open double-walled cylinder with a vertical brightness gradient in the
- * vertex colours: bright at the base, gone by the top, plus a hot band at the
- * very bottom where the column meets the floor. Vertex colours because an
- * additive material needs SOME spatial variation or it reads as a solid tube,
- * and a gradient texture is a texture we would have to generate and upload.
+ * A double-walled cylinder with a vertical brightness gradient in the vertex
+ * colours: bright at the base, gone by the top, plus a hot band at the very
+ * bottom where the column meets the floor. Vertex colours because an additive
+ * material needs SOME spatial variation or it reads as a solid tube, and a
+ * gradient texture is a texture we would have to generate and upload.
+ *
+ * Both walls are wound outward and the material draws BACK faces only, so what
+ * reaches the screen is the far side of both shells — a column standing behind
+ * the hero rather than a fog draped over them. See the constructor.
  */
 function buildColumn(radius, height, segments, rings) {
   const pos = [];
@@ -299,8 +331,10 @@ function buildColumn(radius, height, segments, rings) {
         const b = base + iy * segments + ((ia + 1) % segments);
         const c = base + (iy + 1) * segments + ((ia + 1) % segments);
         const d = base + (iy + 1) * segments + ia;
-        if (shell === 0) idx.push(a, b, c, a, c, d);
-        else idx.push(a, c, b, a, d, c);   // inner shell faces inward
+        // BOTH shells wound outward. The material culls front faces, so each
+        // shell contributes only its far wall — two thin arcs of light behind
+        // the hero, not four layers of haze in front of them.
+        idx.push(a, b, c, a, c, d);
       }
     }
   }

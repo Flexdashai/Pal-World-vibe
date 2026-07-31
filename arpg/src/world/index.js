@@ -462,15 +462,20 @@ export class WorldSystem {
    *  thin where a long sightline has to survive it. */
   _fogFor(room) {
     switch (room.kind) {
-      case 'undercroft': return 1.9;
-      case 'corridor': return 1.35;
-      case 'passage': return 1.35;
-      case 'ossuary': return 1.15;
-      case 'chamber': return 1.1;
-      case 'arena': return 0.85;
-      case 'processional': return 0.75;
-      case 'shrine': return 1.05;
-      default: return 0.9;
+      // Fog is the second fill lever and the only one that lifts the blacks
+      // WITHOUT lifting a lit surface: in-scattering adds to empty air, so a
+      // dark corridor gains information and a brazier pool does not change.
+      // It also does the depth separation the frame needs, which is why the
+      // long-sightline rooms get LESS of it, not more.
+      case 'undercroft': return 2.0;
+      case 'corridor': return 1.60;
+      case 'passage': return 1.55;
+      case 'ossuary': return 1.35;
+      case 'chamber': return 1.30;
+      case 'arena': return 0.95;
+      case 'processional': return 0.85;
+      case 'shrine': return 1.20;
+      default: return 1.25;
     }
   }
 

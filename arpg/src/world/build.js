@@ -326,13 +326,34 @@ export function buildCathedral(B, room) {
     span: gate.width, rise: ARCH.archRise, sill: 0, nx: -0.7, nz: -0.7, group: 'far',
   });
   portcullis(B, { x: gate.x, z: gate.z, y: 0, width: gate.width - 0.25, height: 3.9, yaw: DIAG_YAW + Math.PI * 0.5 });
-  // Two great braziers flanking the gate, INSIDE the hall — they are what makes
-  // the gate read as the way on, and they rim-light the portcullis bars.
+  // Lighting the gate, which is the entire `depth` shot.
+  //
+  // The two great braziers stand WIDE of the opening, not in front of it: at
+  // 1.9 m they sat exactly where the arch projects on screen and the shot came
+  // back as two bright blobs pasted over a black hole. Pushed out to 3.6 m they
+  // rake across the jambs instead, and the reveal reads as thick masonry.
   for (const s of [-1, 1]) {
-    const bx = gate.x + DIR.screenDown[0] * 2.2 + s * 1.9 * Math.SQRT1_2;
-    const bz = gate.z + DIR.screenDown[1] * 2.2 - s * 1.9 * Math.SQRT1_2;
+    const bx = gate.x + DIR.screenDown[0] * 1.4 + s * 3.6 * Math.SQRT1_2;
+    const bz = gate.z + DIR.screenDown[1] * 1.4 - s * 3.6 * Math.SQRT1_2;
     brazier(B, { x: bx, z: bz, kind: 'great' });
     B.keepOut(bx, bz, 1.6);
+  }
+  // Sconces on the chamfer wall either side of the arch. Small, and the only
+  // thing that puts any value on nine metres of otherwise unlit backdrop.
+  for (const s of [-1, 1]) {
+    const sx = gate.x + s * 2.9 * Math.SQRT1_2 + DIR.screenDown[0] * 0.5;
+    const sz = gate.z - s * 2.9 * Math.SQRT1_2 + DIR.screenDown[1] * 0.5;
+    sconce(B, { x: sx, y: 3.3, z: sz, yaw: DIAG_YAW + Math.PI, group: 'far' });
+  }
+  // And a great brazier three metres THROUGH the gate, standing in the
+  // processional. This is what makes the opening a bright hole in a dark wall
+  // instead of a dark hole in a dark wall, and it is the whole read of the
+  // `depth` shot: you can see that there is somewhere to go.
+  {
+    const tx = gate.x + DIR.screenUp[0] * 3.4;
+    const tz = gate.z + DIR.screenUp[1] * 3.4;
+    brazier(B, { x: tx, z: tz, kind: 'great' });
+    B.keepOut(tx, tz, 1.6);
   }
 
   // South (camera side): a low screen wall with piers, broken open where the
@@ -730,7 +751,10 @@ export function buildCorridor(B, room) {
     });
   }
 
-  barrelVault(B, { x: room.x, z: room.z, yaw: room.yaw, width: W + 0.3, length: L, springY, ribEvery: L / room.bays, segments: 11 });
+  barrelVault(B, {
+    x: room.x, z: room.z, yaw: room.yaw, width: W + 0.3, length: L, springY,
+    rise: 1.35, ribEvery: L / room.bays, segments: 11,
+  });
 
   // Niches down the screen-left (backdrop) wall, most of them occupied. This is
   // the wall the camera actually sees down the corridor's axis, and the niches
@@ -771,7 +795,10 @@ export function buildCorridor(B, room) {
 
   // Sconces on the backdrop wall — dim, every third rib, so the corridor reads
   // as a chain of small pools rather than a lit tube.
-  const sconces = Math.max(2, Math.round(L / 6.5));
+  // One sconce every ~4.5 m. A 22 m corridor with three lights in it is not
+  // atmospheric, it is unlit: the pools have to overlap at their feet or the
+  // player walks through stretches with no information in them at all.
+  const sconces = Math.max(3, Math.round(L / 4.5));
   for (let i = 0; i < sconces; i++) {
     const lz = -L * 0.5 + (L / sconces) * (i + 0.55);
     toWorld(room, -W * 0.5 + 0.1, lz, p);
@@ -779,9 +806,11 @@ export function buildCorridor(B, room) {
   }
   // One brazier at the midpoint, on the floor, so there is a single strong pool
   // somewhere along the walk. Off the centre line so the player can pass it.
-  toWorld(room, W * 0.28, rng.range(-L * 0.1, L * 0.2), p);
-  brazier(B, { x: p.x, z: p.z, kind: 'small' });
-  B.keepOut(p.x, p.z, 1.3);
+  for (const t of [-0.22, 0.30]) {
+    toWorld(room, W * 0.26 * (t < 0 ? 1 : -1), L * t, p);
+    brazier(B, { x: p.x, z: p.z, kind: 'small' });
+    B.keepOut(p.x, p.z, 1.3);
+  }
 
   // Damp: roots through the vault haunch, and water-worn debris in the gutters.
   for (let i = 0; i < rng.int(1, 3); i++) {
@@ -1101,7 +1130,10 @@ export function buildPassage(B, room) {
       group: nx + nz > 0.3 ? 'near' : 'far',
     });
   }
-  barrelVault(B, { x: room.x, z: room.z, yaw: room.yaw + Math.PI * 0.5, width: W + 0.3, length: L, springY: room.y + 1.9, ribEvery: 2.4, segments: 9 });
+  barrelVault(B, {
+    x: room.x, z: room.z, yaw: room.yaw + Math.PI * 0.5, width: W + 0.3, length: L,
+    springY: room.y + 1.9, rise: 1.05, ribEvery: 2.4, segments: 9,
+  });
 
   const n = Math.max(1, Math.round(L / 7));
   for (let i = 0; i < n; i++) {

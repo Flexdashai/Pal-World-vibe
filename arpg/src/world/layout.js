@@ -341,10 +341,12 @@ export function generateLevel(rng, seed) {
       snap(arena.z + DIR.screenDown[1] * arenaR * 0.52, 0.5),
     ],
 
-    // Four metres down-screen of the monolith, at the foot of its dais.
+    // At the foot of the monolith's dais, close enough that the slab lands at
+    // about two thirds of the frame height at the shrine boom (18 m) rather
+    // than running off the top of it.
     shrine: [
-      snap(shrine.x + DIR.screenDown[0] * 4.6, 0.5), shrine.y,
-      snap(shrine.z + DIR.screenDown[1] * 4.6, 0.5),
+      snap(shrine.x + DIR.screenDown[0] * 2.6, 0.5), shrine.y,
+      snap(shrine.z + DIR.screenDown[1] * 2.6, 0.5),
     ],
   };
 
