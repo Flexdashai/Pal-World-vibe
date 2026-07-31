@@ -88,7 +88,11 @@ export const SHOTS = {
          'readability, the violet monarch aura.',
   },
   portrait: {
-    focus: 'shrine', boom: 6.0, fov: 24, time: 1.2,
+    // Framed on the hall, not the shrine: at a 6 m boom the shrine's monolith
+    // sits between the eye and the player and the frame fills with its back face.
+    // The hall is the only landmark with enough clear space around the focus for
+    // a boom this short.
+    focus: 'hall', boom: 7.0, fov: 26, time: 1.2,
     apply: (e) => e.ctx.peek('player')?.debugPose?.('idle'),
     doc: 'Hero filling the frame — mesh construction, material separation between ' +
          'plate/leather/cloth, normal detail, and how the silhouette holds up when ' +

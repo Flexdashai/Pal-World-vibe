@@ -283,8 +283,18 @@ export function generateLevel(rng, seed) {
   // from a corridor into a place: it means the player can be flanked, can
   // retreat a different way, and can see a room they have already been in from a
   // new angle, which is the cheapest way to make a small level feel large.
-  const loopFrom = { x: cell.x, z: cell.z + cellD * 0.5 };
-  const loopTo = { x: oss.x - ossW * 0.5, z: oss.z };
+  // Routed down the SCREEN-RIGHT side of the crypt corridor, never across it.
+  // A straight line from the cell to the ossuary's near wall cuts the corridor
+  // in half — two sets of walls in the same cubic metre, which reads as a
+  // rendering bug rather than as a level. `stats().overlaps` catches this.
+  const loopFrom = {
+    x: cell.x + DIR.screenDown[0] * cellD * 0.45 + Math.SQRT1_2 * 2,
+    z: cell.z + DIR.screenDown[1] * cellD * 0.45 - Math.SQRT1_2 * 2,
+  };
+  const loopTo = {
+    x: oss.x + ossW * 0.42,
+    z: oss.z - ossD * 0.5 - 1.0,
+  };
   const loop = add(finalise(makeRoom({
     id: 'loop', kind: 'passage', name: 'The Sagging Passage',
     x: snap((loopFrom.x + loopTo.x) * 0.5), z: snap((loopFrom.z + loopTo.z) * 0.5),
@@ -367,18 +377,44 @@ export function generateLevel(rng, seed) {
     cell: CELL,
   };
 
-  // Sanity: overlapping room AABBs would mean two sets of walls in the same
-  // place, which reads as a rendering bug rather than as a level. Reported
-  // rather than thrown — a slight overlap between a corridor and the room it
-  // enters is legitimate and expected.
+  // Sanity: two rooms occupying the same cubic metre means two sets of walls in
+  // one place, which reads as a rendering bug rather than as a level. Reported
+  // rather than thrown — a corridor overlapping the room it enters is correct
+  // and expected, so only NON-NEIGHBOURS are checked.
+  //
+  // The test is a separating-axis test on the rooms' real ROTATED rectangles,
+  // not on their AABBs. Two of this level's rooms are at 45 degrees and their
+  // axis-aligned bounds are 1.4x their true footprint, so an AABB test reports
+  // an overlap between the crypt corridor and a passage that runs ten metres
+  // clear of it — a false alarm that is worse than no check at all, because it
+  // trains whoever reads `stats()` to ignore the field.
   level.overlaps = [];
+  const rectOf = (r) => {
+    const c = Math.cos(r.yaw), s = Math.sin(r.yaw);
+    return { cx: r.x, cz: r.z, hx: r.w * 0.5, hz: r.d * 0.5, ax: [c, -s], az: [s, c] };
+  };
+  const project = (rc, axis) =>
+    Math.abs(rc.ax[0] * axis[0] + rc.ax[1] * axis[1]) * rc.hx +
+    Math.abs(rc.az[0] * axis[0] + rc.az[1] * axis[1]) * rc.hz;
+  const obbOverlap = (a, b) => {
+    const dx = b.cx - a.cx, dz = b.cz - a.cz;
+    for (const axis of [a.ax, a.az, b.ax, b.az]) {
+      const d = Math.abs(dx * axis[0] + dz * axis[1]);
+      if (d > project(a, axis) + project(b, axis)) return 0;
+    }
+    // Overlapping on every axis: report the smallest penetration as a severity.
+    let worst = Infinity;
+    for (const axis of [a.ax, a.az, b.ax, b.az]) {
+      const d = Math.abs(dx * axis[0] + dz * axis[1]);
+      worst = Math.min(worst, project(a, axis) + project(b, axis) - d);
+    }
+    return worst;
+  };
   for (let i = 0; i < rooms.length; i++) {
     for (let j = i + 1; j < rooms.length; j++) {
-      const a = rooms[i].aabb, b = rooms[j].aabb;
       if (rooms[i].neighbours.includes(rooms[j].id)) continue;
-      const ox = Math.min(a.maxX, b.maxX) - Math.max(a.minX, b.minX);
-      const oz = Math.min(a.maxZ, b.maxZ) - Math.max(a.minZ, b.minZ);
-      if (ox > 2.5 && oz > 2.5) level.overlaps.push([rooms[i].id, rooms[j].id, +ox.toFixed(1), +oz.toFixed(1)]);
+      const pen = obbOverlap(rectOf(rooms[i]), rectOf(rooms[j]));
+      if (pen > 1.5) level.overlaps.push([rooms[i].id, rooms[j].id, +pen.toFixed(1)]);
     }
   }
 

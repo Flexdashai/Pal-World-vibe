@@ -23,7 +23,7 @@ const H = Number(args.h ?? 720);
 const SETTLE = Number(args.settle ?? 28);
 const SHUTTER = Number(args.shutter ?? 180000);
 const OUTDIR = resolve(args.out ?? 'arpg/shots/set');
-const TIMEOUT = Number(args.timeout ?? 240000);
+const TIMEOUT = Number(args.timeout ?? 600000);
 // 4 cores and a CPU rasteriser: 2 pages in flight is the throughput sweet spot,
 // more just thrashes.
 const JOBS = Math.max(1, Number(args.jobs ?? 2));

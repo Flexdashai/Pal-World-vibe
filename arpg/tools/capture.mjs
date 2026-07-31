@@ -19,7 +19,7 @@ const W = Number(args.w ?? 1280);
 const H = Number(args.h ?? 720);
 const SHOT = args.shot ?? 'hero';
 const OUT = resolve(args.out ?? `arpg/shots/${SHOT}.png`);
-const TIMEOUT = Number(args.timeout ?? 240000);
+const TIMEOUT = Number(args.timeout ?? 600000);
 // Frames rendered before the shutter: lets TAA converge and transients land.
 // Software rendering makes every one of these cost ~0.5-1.5 s, hence the low
 // default compared to a GPU harness.

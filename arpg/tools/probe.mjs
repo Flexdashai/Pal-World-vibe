@@ -18,7 +18,7 @@ import { parseArgs, ensureServer, launch, trackLogs, errorsOnly, url, DEFAULT_PO
 
 const args = parseArgs();
 const PORT = Number(args.port ?? DEFAULT_PORT);
-const TIMEOUT = Number(args.timeout ?? 240000);
+const TIMEOUT = Number(args.timeout ?? 600000);
 const PUMP = Number(args.pump ?? 0);
 
 const server = await ensureServer(PORT);
