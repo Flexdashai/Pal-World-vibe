@@ -64,12 +64,42 @@ export const SHOTS = {
          'aerial perspective, foreground/background separation.',
   },
 
+  // ---- level read ----
+  overview: {
+    focus: 'hall', boom: 58, fov: 42, time: 1.2,
+    apply: (e) => e.ctx.peek('ai')?.debugStage?.('idle'),
+    doc: 'Pulled far back over the level — reads dungeon LAYOUT: room shapes, ' +
+         'sightlines, the critical path, and whether the light placement sculpts ' +
+         'the space or floods it. The composition test no gameplay-distance shot ' +
+         'can perform.',
+  },
+  arch: {
+    focus: 'gate', boom: 14, fov: 30, time: 1.2,
+    doc: 'Architecture at mid range — arches, columns, capitals, statuary, vault ' +
+         'ribs. Judges whether the gothic kit reads as authored or as a grid of ' +
+         'identical instances.',
+  },
+
   // ---- character ----
   character: {
     focus: 'hall', boom: 11, fov: 30, time: 1.2,
     apply: (e) => e.ctx.peek('player')?.debugPose?.('idle'),
     doc: 'Hero at close range — armour materials, cloth, rim light, silhouette ' +
          'readability, the violet monarch aura.',
+  },
+  portrait: {
+    focus: 'shrine', boom: 6.0, fov: 24, time: 1.2,
+    apply: (e) => e.ctx.peek('player')?.debugPose?.('idle'),
+    doc: 'Hero filling the frame — mesh construction, material separation between ' +
+         'plate/leather/cloth, normal detail, and how the silhouette holds up when ' +
+         'nothing else is competing for attention. Deliberately closer than the ' +
+         'game ever gets, because defects hidden at 21 m are still defects.',
+  },
+  stance: {
+    focus: 'hall', boom: 9.0, fov: 28, time: 1.2,
+    apply: (e, o) => e.ctx.peek('player')?.debugPose?.('run', o),
+    doc: 'Hero mid-run — animation weight, coat and hood secondary motion, ' +
+         'contact/pass/lift phasing. A static idle cannot show any of it.',
   },
 
   // ---- combat ----
