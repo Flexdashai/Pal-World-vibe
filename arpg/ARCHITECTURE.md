@@ -253,3 +253,55 @@ frames and Solo Leveling stills. Non-negotiables:
 - **Depth separation.** Fog, light falloff and a subtle vignette must make the
   foreground read against the background. A flat-lit readable-everywhere image is a
   failure even if every material is perfect.
+
+### Effects are animated in phases, never faded linearly
+
+An emitter with a lifetime and a linear alpha ramp is the single clearest tell of a
+hobby project. Every significant effect — spell, impact, death, extraction, drop —
+is an explicit timeline:
+
+| phase | duration | easing | what happens |
+|---|---|---|---|
+| anticipation | 80–220 ms | ease **in** | energy gathers: glyph scribes, motes converge, light builds |
+| strike | 16–50 ms | **step** | white-hot core far above final brightness, scale pop, peak light, screen distortion, hit-stop lands on this frame |
+| bloom-out | 120–350 ms | expo out | shockwave expands and thins, core collapses |
+| dissipation | 400–900 ms | ease **out** | embers drift, smoke curls, decal fades, light decays to zero |
+
+Within one effect the core, ring, embers, smoke and light each run on **their own
+curve and their own duration** — roughly 1× / 2.5× / 6× / 10× / 3×. Sharing one
+timeline is what makes an effect read as a single sprite scaling up.
+
+Every significant effect animates a **light** with its own envelope, peaking about
+one frame *before* the visual peak and decaying slower. A spell whose light snaps
+on and off with its sprite does not illuminate anything, and the eye notices.
+
+Effects are **directional**. A radially symmetric blood spray from a side slash is
+wrong; emission biases along the incident direction.
+
+### Characters are designed as silhouettes
+
+The camera is 21 m away at −52°, which is roughly 120 px of character height at
+720p. A viewer reads *shape*, not detail.
+
+- Every archetype must be identifiable **as a solid black shape**. Render it that
+  way and check. If two archetypes share an outline, one of them is redesigned.
+- Within a pack, vary height, limb proportion, armour pieces, damage state, tint
+  and animation phase offset per instance. Twenty identical skeletons is a tell.
+- Material separation is mandatory: plate, leather, cloth and skin need visibly
+  different roughness *and* different normal detail scale. One roughness across a
+  whole character reads as plastic.
+- Secondary motion (spring or verlet chains on coat, hood, straps, hair, hanging
+  flesh) is the strongest "animated by a professional" signal at this distance.
+- Animation needs anticipation, a fast strike, and follow-through with overlapping
+  action on the secondary chains. Idle is never a static pose.
+- Shadow soldiers are near-black, which is **not** flat black — without a violet
+  fresnel and faint internal variation they become a hole in the frame.
+
+### Items are objects, not icons
+
+A dropped item is a real procedural mesh with a silhouette specific to its base
+type — a greatsword is not a scaled long sword. Rarity escalates through
+*material treatment* (dull iron → polished with trim → cut runes with an ember
+glow → violet energy bleeding off the edges), read from `palette.RARITY`, and the
+ground beam must let a player identify a legendary from across the room before
+they can resolve the item itself.
