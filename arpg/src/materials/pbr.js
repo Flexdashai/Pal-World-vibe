@@ -361,7 +361,14 @@ const FRAG_SAMPLE = /* glsl */ `
 	float mnDv = ( mnDet.b - 0.5 ) * mnDetFade;
 	mnAlbedo *= 1.0 + mnDv * mnDetail.z;
 	mnRough += mnDv * mnDetail.w;
-	mnNTS = mnPerturbN( mnNTS, ( mnDet.rg * 2.0 - 1.0 ) * mnDetail.y * mnDetFade );
+	// The micro-normal is GATED ON ROUGHNESS. A near-mirror surface — standing
+	// water, polished marble, obsidian, steel — turns a high-frequency normal
+	// perturbation into a field of specular sparkles: the highlight is narrower
+	// than a texel, so every texel either catches it or does not, and the result
+	// is white static that no amount of TAA can settle. Rough surfaces have a
+	// wide enough lobe to integrate it, which is where the detail belongs.
+	float mnGloss = smoothstep( 0.07, 0.32, mnRough );
+	mnNTS = mnPerturbN( mnNTS, ( mnDet.rg * 2.0 - 1.0 ) * mnDetail.y * mnDetFade * mnGloss );
 
 	// ---- macro variation (the anti-tiling layer) --------------------------
 	float mnMv = mnMac.b - 0.5;

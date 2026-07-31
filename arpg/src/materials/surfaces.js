@@ -691,9 +691,15 @@ export const SURFACES = [
 	float groundH = 0.40 + ( macro - 0.5 ) * 0.18 + ( fine - 0.5 ) * 0.07;
 	vec3 groundC = MN_DIRT * ( 0.6 + 0.9 * macro ) * ( 0.85 + 0.3 * fine );
 
-	// Two shard populations: long bones and small chips.
-	vec3 big = mnShards( uv, vec2( 6.0 ), 0.55, 0.62, 0.115 );
-	vec3 small = mnShards( uv + 0.37, vec2( 14.0 ), 0.45, 0.40, 0.085 );
+	// Two shard populations: long bones and smaller chips.
+	//
+	// The chip population was 14 cells across a 1.8 m repeat, which put its
+	// shards at about one screen pixel and turned the whole surface into white
+	// static. Anything meant to be READ as an object rather than as a texture
+	// has to be at least three or four pixels across at the distance it is seen,
+	// and on this floor that means nothing below about 8 cm.
+	vec3 big = mnShards( uv, vec2( 5.0 ), 0.60, 0.70, 0.135 );
+	vec3 small = mnShards( uv + 0.37, vec2( 9.0 ), 0.34, 0.48, 0.105 );
 
 	float m = max( big.x, small.x * 0.9 );
 	float id = big.x >= small.x * 0.9 ? big.y : small.y;
@@ -701,9 +707,11 @@ export const SURFACES = [
 
 	f.height = clamp( mix( groundH, 0.58 + dome * 0.36, m ), 0.0, 1.0 );
 
-	// Bone is by far the lightest thing on a crypt floor and needs to stay that
-	// way or the litter stops reading. Age-staining lives in the low areas.
-	vec3 boneC = MN_BONE * ( 0.55 + 0.60 * mnHash11( id * 43.1 ) );
+	// Bone is the lightest thing on a crypt floor and needs to stay that way or
+	// the litter stops reading — but not by so much that it blows out: at 0.42
+	// linear it is eight times the reflectance of the flagstone around it, so
+	// the range here is pulled down and the staining below does the rest.
+	vec3 boneC = MN_BONE * ( 0.38 + 0.42 * mnHash11( id * 43.1 ) );
 	float stain = smoothstep( 0.7, 0.1, dome ) * ( 0.4 + 0.6 * mnFbm( uv * 40.0, vec2( 40.0 ), 2, 0.5 ) );
 	boneC = mix( boneC, boneC * mix( vec3( 1.0 ), MN_DIRT * 12.0, 0.55 ), stain * 0.75 );
 	// Longitudinal striations along each shard.

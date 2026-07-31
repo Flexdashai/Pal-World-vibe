@@ -376,8 +376,11 @@ export class MaterialProbeScene {
       m.userData.mnSurfaceId = s.id;
     });
 
-    this._light(g, LIGHTS.brazier.color, LIGHTS.brazier.intensity * 1.4, 24, 3.5, 3.2, 3.5);
-    this._light(g, LIGHTS.moon.color, 12.0, 26, -6.0, 5.0, -6.0);
+    // Two lights, both well above the slabs: a close raking light blows out the
+    // brightest surfaces in the set (marble, bone) and makes the whole review
+    // useless for exactly the materials whose reflectance most needs checking.
+    this._light(g, LIGHTS.brazier.color, LIGHTS.brazier.intensity * 0.9, 30, 4.0, 6.5, 4.0);
+    this._light(g, LIGHTS.moon.color, 9.0, 30, -6.0, 7.5, -6.0);
   }
 
   // -------------------------------------------------------------------------
