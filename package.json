@@ -10,7 +10,8 @@
     "arpg:build": "vite build --config arpg/vite.config.js",
     "arpg:preview": "vite preview --config arpg/vite.config.js",
     "arpg:shot": "node arpg/tools/capture.mjs",
-    "arpg:shots": "node arpg/tools/shotset.mjs"
+    "arpg:shots": "node arpg/tools/shotset.mjs",
+    "arpg:play": "vite build --config arpg/vite.config.js && node arpg/tools/bundle.mjs --out=arpg/monarch.html"
   },
   "author": "",
   "license": "ISC",
