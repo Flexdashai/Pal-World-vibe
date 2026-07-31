@@ -14,6 +14,7 @@ import { LootSystem } from './loot/index.js';
 import { UiSystem } from './ui/index.js';
 import { AudioSystem } from './audio/index.js';
 
+import { PerfSystem } from './core/perf.js';
 import { installShotApi } from './dev/shots.js';
 import { prewarm } from './core/prewarm.js';
 
@@ -46,7 +47,8 @@ engine
   .add(AiSystem)
   .add(LootSystem)
   .add(UiSystem)
-  .add(AudioSystem);
+  .add(AudioSystem)
+  .add(PerfSystem);
 
 try {
   await engine.init();

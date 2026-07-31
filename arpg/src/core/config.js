@@ -34,8 +34,11 @@ export const CAMERA = {
   boomMax: 30.0,
   /** Focus point sits below the player so they land at the lower third. */
   focusLift: 0.9,
-  /** Seconds for the boom to catch up to the player (critically damped). */
-  followTime: 0.16,
+  /** Seconds for the boom to catch up to the player (critically damped).
+   *  Kept short on purpose: the player judges responsiveness by when the CAMERA
+   *  starts moving, not by when the character does, so a long follow reads as
+   *  input lag even when input is being sampled the same frame it arrives. */
+  followTime: 0.09,
   near: 1.0,
   far: 140.0,
 };
