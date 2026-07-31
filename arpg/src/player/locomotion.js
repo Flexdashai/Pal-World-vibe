@@ -129,11 +129,23 @@ export class Locomotion {
       // WASD wins and cancels any click-to-move goal: a player who grabs the
       // keyboard mid-path is correcting the path.
       this.hasMoveTarget = false;
-      // Camera-relative. Screen up is −X−Z and screen right is +X−Z under the
-      // fixed 45° yaw, which is exactly a rotation of the input axes by the
-      // camera yaw.
+      /**
+       * Camera-relative. Screen right is +X−Z and screen up is −X−Z under the
+       * fixed 45° yaw.
+       *
+       * The sign on the forward axis was wrong and W drove the hero DOWN-RIGHT,
+       * directly away from the camera's "into the distance". Measured before
+       * the fix, holding W from the spawn moved (+1.46, +1.46) — backwards —
+       * and the short distance was the hero walking into the wall behind them.
+       * A and D were always correct, which is what made it survive: the bug
+       * reads as "the diagonals feel wrong" rather than as "W is inverted".
+       *
+       *   W  a=(0, 1) -> (−0.707, 0, −0.707)  screen up
+       *   D  a=(1, 0) -> (+0.707, 0, −0.707)  screen right
+       *   W+D          -> (0, 0, −1.414)      up-and-right, as it must be
+       */
       const s = Math.sin(CAMERA.yaw), c = Math.cos(CAMERA.yaw);
-      this.wish.set(a.x * c + a.y * s, 0, -a.x * s + a.y * c);
+      this.wish.set(a.x * c - a.y * s, 0, -a.x * s - a.y * c);
       const l = this.wish.length();
       if (l > 1) this.wish.multiplyScalar(1 / l);
       this.wish.multiplyScalar(this.maxSpeed);

@@ -96,6 +96,9 @@ import { WardShell } from './fxward.js';
  * `fx:explosion` at every point where `fx` should take over, and never draws a
  * decal, a blood spray or a gib itself. See the note at the top of `fxkit.js`.
  */
+/** Seconds a refused press stays live. See the INPUT BUFFER note in the class. */
+const BUFFER_WINDOW = 0.18;
+
 export class CombatSystem {
   static id = 'combat';
   static deps = ['physics', 'player', 'fx'];
@@ -157,6 +160,23 @@ export class CombatSystem {
       end: (c, interrupted) => this._onCastEnd(c, interrupted),
       blocked: (id, why) => this._onCastBlocked(id, why),
     });
+
+    /**
+     * INPUT BUFFER.
+     *
+     * `input.pressed(id)` is edge-triggered, so a press that arrives while a
+     * cast is running used to be discarded outright — the player pressed, the
+     * game did nothing, and they had to press again once the animation ended.
+     * With a nova at 0.78 s of committed animation, that is most of a fight.
+     *
+     * Every action game solves this the same way: remember the last refused
+     * press and fire it the instant the skill becomes legal. The window is
+     * short on purpose. Too long and the game replays inputs the player has
+     * mentally abandoned, which feels possessed rather than responsive; 180 ms
+     * covers pressing slightly early without covering pressing and changing
+     * your mind.
+     */
+    this._buffer = { id: null, at: -1 };
 
     // ---- preallocated scratch. Nothing below this line allocates. -----------
     this._dmg = makeDamageResult();
@@ -263,9 +283,28 @@ export class CombatSystem {
     }
 
     this.exec.update(h, player);
+    this._flushBuffer(now, player);
     this.status.tick(h, now);
     this._updateDomain(h, now);
     this._updateWard(h, now, player);
+  }
+
+  /**
+   * Fire a buffered press the moment it becomes legal.
+   *
+   * Runs after `exec.update`, which is what ends a cast — so a press buffered
+   * during recovery resolves on the very step the recovery expires, with no
+   * extra frame of delay. Running it before the update would always cost one
+   * fixed step (16.7 ms), which is precisely the latency this exists to remove.
+   */
+  _flushBuffer(now, player) {
+    const b = this._buffer;
+    if (b.id === null) return;
+    if (now - b.at > BUFFER_WINDOW) { b.id = null; return; }
+    if (this.exec.why(b.id, player)) return;   // still not legal; keep waiting
+    const id = b.id;
+    b.id = null;
+    this.cast(id, { fromInput: true, buffered: true });
   }
 
   /**
@@ -313,6 +352,16 @@ export class CombatSystem {
     const refusal = this.exec.why(id, caster);
     if (refusal) {
       this.exec.counters.refused++;
+      // Buffer only a DELIBERATE press, and only when the refusal is temporary.
+      // 'mana' and 'dead' will not resolve on their own inside the window, and
+      // replaying them later would fire a skill the player pressed for while
+      // broke. The primary attack is excluded because it is held-fire: it
+      // re-issues every frame anyway, so buffering it would do nothing except
+      // let go of the button and still swing.
+      if (opts.fromInput && id !== 'skill1' && (refusal === 'busy' || refusal === 'cooldown')) {
+        this._buffer.id = id;
+        this._buffer.at = this.ctx.time.elapsed;
+      }
       this._onCastBlocked(id, refusal);
       return false;
     }

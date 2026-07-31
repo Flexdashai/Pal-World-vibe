@@ -137,13 +137,30 @@ export class Executor {
     const s = this.states.get(id);
     if (!s) return 'unknown';
     if (caster && caster.alive === false) return 'dead';
-    // A running cast can be superseded only by the primary attack chaining into
-    // itself; everything else waits. Letting the ultimate interrupt a cleave
-    // mid-swing looks broken because the animation snaps.
+    /**
+     * WHAT MAY INTERRUPT A RUNNING CAST.
+     *
+     * The first version allowed only the primary attack to chain into itself,
+     * on the reasoning that letting the ultimate cut a cleave mid-swing snaps
+     * the animation. That reasoning is right about the WIND-UP and wrong about
+     * the RECOVERY, and the difference is most of why the combat felt sticky:
+     * a nova is 0.44 s of wind-up plus 0.34 s of recovery, so pressing anything
+     * during three quarters of a second was simply discarded.
+     *
+     * Recovery is the tail of an animation that has already delivered its hit.
+     * Cutting it is what every action game does, and it is the single biggest
+     * contributor to combat feeling responsive rather than turn-based. The
+     * wind-up stays protected — committing to a heavy swing and being able to
+     * take it back is what makes a game feel weightless.
+     *
+     * The dash is exempt from all of it. A dodge that cannot be used because
+     * the player is mid-animation is the most frustrating thing an ARPG can do,
+     * and every game in the genre lets dodge cancel everything.
+     */
     if (this.cast.active) {
-      const chaining = id === 'skill1' && this.cast.id === 'skill1' &&
-        this.cast.phase === 'recovery';
-      if (!chaining) return 'busy';
+      const dash = s.def.shape === 'dash';
+      const inRecovery = this.cast.phase === 'recovery';
+      if (!dash && !inRecovery) return 'busy';
     }
     if (!s.ready) return 'cooldown';
     const mana = caster?.stats?.mana;
@@ -192,6 +209,13 @@ export class Executor {
     s.casts++;
     s.lastCastAt = now;
     this.counters.casts++;
+
+    // A cast that supersedes another (a recovery cancel, or a dash out of
+    // anything) must close the old one first, or `player` never receives the
+    // `end` that stops its animation layer and `ui` leaves the old cooldown
+    // sweep running. `false` because the player chose this — it is not an
+    // interruption and must not count as one in the stats.
+    if (this.cast.active) this.cancel(false);
 
     // ---- the chain ---------------------------------------------------------
     let step = null;
