@@ -1,140 +1,185 @@
 import * as THREE from 'three';
-import { ELEMENTS, LIGHTS } from '../core/palette.js';
+import { ELEMENTS } from '../core/palette.js';
+import { STREAM, DRESS, clamp } from './tuning.js';
+import { generateLevel } from './layout.js';
+import { Builder, ROOM_BUILDERS, materialsFor } from './build.js';
+import { debrisGeometry } from './props.js';
+import { createFlameMaterial, buildFlameGeometry } from './fire.js';
+import { Practicals } from './lighting.js';
+import { registerColliders, colliderTriangles } from './collision.js';
 
 /**
- * STUB — still owned by the `world` agent, still to be replaced by a real
- * procedural dungeon generator. What it is no longer is a scene of untextured
- * primitives lit by a placeholder sun.
+ * ============================================================================
+ * MONARCH — `world` subsystem.  PUBLIC API.
+ * ============================================================================
  *
- * INTEGRATION-GATE NOTE (read this before rewriting the file)
- * ----------------------------------------------------------
- * This stub exists to keep every published cross-subsystem contract LIVE, so the
- * subsystems that depend on `world` can be reviewed at all. Four contracts were
- * dead before and are exercised here; a rewrite must keep exercising them:
+ *   id    'world'
+ *   deps  ['render', 'materials']   (`physics` and `sky` are reached with
+ *                                    `ctx.peek` and are optional)
  *
- *  1. `ctx.get('materials').get(name, opts)` — every world surface comes from the
- *     shared library. Nothing here constructs a THREE material for a world
- *     surface. Geometry is built with **UVs in metres** (see `boxUvMetres` and
- *     the floor), which is the one convention the library requires; geometry
- *     that cannot do that asks for `{ triplanar: true }`.
+ * `const w = ctx.get('world')`. Nothing outside `src/world/` imports a module
+ * from this directory.
  *
- *  2. `sky` owns the key light. This file deliberately creates **no directional
- *     and no hemisphere light**. `sky._electKeyLight` adopts any shadow-casting
+ *   w.debugFocus(name)   -> { pos:[x,y,z], look:[x,y,z] }
+ *                           'hall' | 'corridor' | 'shrine' | 'arena' | 'gate'
+ *   w.debugStage(name)   -> 'clean' | 'lit' | 'dark'
+ *   w.level              -> the generated room graph (see layout.js)
+ *   w.roomAt(x, z)       -> the room containing a point, or null
+ *   w.spawn              -> THREE.Vector3, the player start
+ *   w.stats()
+ *
+ * Events emitted:
+ *   `world:ready`  { level, rooms, spawn }   once, at the end of init()
+ *   `world:room`   { room, cleared }         when the player changes room
+ *
+ * ---------------------------------------------------------------------------
+ * WHAT THIS DIRECTORY OWNS, AND THE ORDER IT HAPPENS IN
+ *
+ *   layout.js    the seeded room graph. Authored topology, seeded everything
+ *                else — see its header for why this is not a maze algorithm
+ *   geom.js      build-time geometry: world-space metre UVs, chipped blocks,
+ *                pointed arches, ribbed vaults, tracery, merging
+ *   kit.js       the modular gothic kit built out of those primitives
+ *   props.js     statuary, tombs, ironwork, banners, roots, debris
+ *   fire.js      braziers, flames, candles — the key light of the whole game
+ *   build.js     composes one room from the kit; owns the material dressing
+ *   lighting.js  the practicals, the flicker, and the light-slot discipline
+ *   collision.js oriented boxes -> triangles -> physics, tagged by surface
+ *
+ * ---------------------------------------------------------------------------
+ * THE THREE CONTRACTS THIS FILE IS RESPONSIBLE FOR KEEPING ALIVE
+ *
+ *  1. `materials.get(name, opts)` for EVERY surface. Nothing here constructs a
+ *     THREE material for a world surface except the two that the library has no
+ *     recipe for (glowing coal, and the flame's additive shader), and both of
+ *     those are registered with `render.registerMaterial` before their first
+ *     draw. All geometry is built with UVs IN METRES, projected from world
+ *     space, which is the one convention the library requires.
+ *
+ *  2. `sky` owns the key light. This subsystem creates NO directional and NO
+ *     hemisphere light. `sky._electKeyLight` adopts any shadow-casting
  *     directional it finds and then stops driving the moon from its own
- *     ephemeris — so the placeholder `DirectionalLight(intensity 2.2)` that used
- *     to live here silently disabled the whole atmosphere model and flat-lit
- *     every frame (analyze.mjs read it as FLAT_CONTRAST on six of thirteen
- *     shots). In a crypt the key IS the brazier, exactly as ARCHITECTURE.md
- *     says, and ambient comes from sky's PMREM rather than from a hemisphere
- *     light stacked on top of it.
+ *     ephemeris, so a stray directional here would silently disable the whole
+ *     atmosphere model. In a crypt the key IS the brazier.
  *
- *  3. `ctx.peek('physics').addStatic(mesh, { surface })` — collision is
- *     registered explicitly with real surface tags, which retires physics'
- *     fallback scene scan and is what makes footstep audio, impact FX and decals
- *     pick the right surface.
- *
- *  4. `render.registerOccluderFade(mesh)` — at this camera pitch the −X/−Z walls
- *     stand between the camera and the player, so they are registered and dither
- *     open around them.
- *
- * The layout itself is throwaway: one flagstone hall with a colonnade, a shrine
- * alcove, a corridor spur and a lower arena, sized so the five debug landmarks
- * the shot harness frames all land on something worth photographing.
+ *  3. `render.registerOccluderFade(mesh)` on everything that can stand between
+ *     the lens and the player — the `near` and `vault` mesh groups — and, more
+ *     importantly, an architecture that mostly does not need it: the +X/+Z side
+ *     of every room is built low on purpose. See `perimeterHeight` in build.js.
  */
-
-/** Room half-extent in metres. The camera sees roughly 30 m across at the hero
- *  boom, so this is a little over one screen in each direction — enough that a
- *  shot never frames the void, small enough to be one BVH build. */
-const HALF = 26;
-/** Walls sit just above the 4 m occlusion threshold ARCHITECTURE.md calls out:
- *  tall enough to enclose, short enough that the occluder fade has to actually
- *  work rather than being decorative. */
-const WALL_H = 4.4;
-const WALL_T = 1.1;
-
-/**
- * Rewrite a BoxGeometry's UVs from three's per-face 0..1 into metres.
- *
- * The material library is calibrated on "geometry UVs are in metres" — that is
- * what makes `tile` mean metres-per-repeat and what makes parallax depth
- * physically correct. A default box hands every face a 0..1 square regardless of
- * that face's size, so a 36 m wall and a 1 m block would get the same number of
- * repeats, and the difference in texel density between two adjacent objects is
- * the most visible tiling artefact there is.
- *
- * three lays BoxGeometry faces out in the fixed order px, nx, py, ny, pz, nz,
- * four vertices each for an unsegmented box, so the per-face metre extents are
- * known without inspecting positions.
- */
-function boxUvMetres(geo, w, h, d) {
-  const uv = geo.attributes.uv;
-  const ext = [
-    [d, h], [d, h],   // +X, -X
-    [w, d], [w, d],   // +Y, -Y
-    [w, h], [w, h],   // +Z, -Z
-  ];
-  for (let f = 0; f < 6; f++) {
-    const su = ext[f][0], sv = ext[f][1];
-    for (let i = 0; i < 4; i++) {
-      const k = f * 4 + i;
-      uv.setXY(k, uv.getX(k) * su, uv.getY(k) * sv);
-    }
-  }
-  uv.needsUpdate = true;
-  return geo;
-}
-
-/** Named landmarks the shot harness frames. Coordinates never leave this file. */
-const LANDMARKS = {
-  hall: { pos: [0.5, 0, -1.5], look: [0.5, 0, -1.5] },
-  corridor: { pos: [7.0, 0, 6.4], look: [7.0, 0, 6.4] },
-  // On the shrine's low bottom step, just clear of the 0.64 m DAIS. The harness
-  // teleports the player onto the landmark, so a landmark inside the dais gets
-  // the capsule depenetrated up onto it and hidden behind the monolith — the
-  // `shrine` shot came back with no player in it at all. Standing on the 0.22 m
-  // step is fine and reads as approaching the altar.
-  shrine: { pos: [-5.0, 0, -1.7], look: [-5.0, 0, -1.7] },
-  arena: { pos: [-1.0, 0, -13.0], look: [-1.0, 0, -13.0] },
-  gate: { pos: [12.6, 0, 2.4], look: [12.6, 0, 2.4] },
-};
-
 export class WorldSystem {
   static id = 'world';
-  /** `physics` is reached through `ctx.peek` at runtime and is optional, but
-   *  `render` and `materials` are hard prerequisites — declaring them makes the
-   *  registry order us after them instead of leaving it to registration luck. */
   static deps = ['render', 'materials'];
 
   async init(ctx) {
     this.ctx = ctx;
+    const t0 = performance.now();
+
+    // ONE fork, taken here and never re-forked, so the whole level is a pure
+    // function of `config.seed` and two captures of the same seed are identical.
     this.rng = ctx.rng.fork();
 
     const mats = ctx.get('materials');
     const render = ctx.get('render');
     const physics = ctx.peek('physics');
+    this.render = render;
+    this.mats = mats;
 
     this.root = new THREE.Group();
     this.root.name = 'mn.world';
     ctx.scene.add(this.root);
 
-    /** Everything we created, so dispose() is exhaustive rather than a guess.
+    /** Everything we allocate, so `dispose()` is exhaustive rather than a guess.
      *  Library materials are NOT in here — `materials` owns and disposes those. */
     this._geometries = [];
-    this._braziers = [];
+    this._ownMaterials = [];
     this._staticIds = [];
-    this.walls = [];
+    this._rooms = [];
+    this._occluderMeshes = [];
 
-    this._buildFloor(mats, physics);
-    this._buildWalls(mats, render, physics);
-    this._buildColonnade(mats, physics);
-    this._buildShrine(mats, physics);
-    this._buildRubble(mats, physics);
-    this._buildBraziers(mats, render, physics);
+    // ---- the two materials the library has no recipe for --------------------
+    this._emberMat = this._makeEmberMaterial(render);
+    this._flameMat = createFlameMaterial();
+    this._ownMaterials.push(this._emberMat, this._flameMat);
 
-    // Preallocated: the payload is emitted once, but `spawn` is a live reference
-    // other subsystems may hold.
-    this._spawn = new THREE.Vector3(0, 0, 0);
-    this._ready = { level: 1, rooms: Object.keys(LANDMARKS).length, spawn: this._spawn };
+    // ---- generate ------------------------------------------------------------
+    this.level = generateLevel(this.rng, ctx.config.seed);
+    this.spawn = new THREE.Vector3(this.level.spawn.x, this.level.spawn.y, this.level.spawn.z);
+
+    // ---- build ---------------------------------------------------------------
+    /** kind -> BufferGeometry, shared by every InstancedMesh of that kind. */
+    this._debrisGeo = new Map();
+    const allColliders = [];
+    const allLights = [];
+    let triangles = 0;
+    let draws = 0;
+
+    for (const room of this.level.rooms) {
+      const spec = materialsFor(room.kind, room);
+      const B = new Builder(room, this.rng, spec);
+      const fn = ROOM_BUILDERS[room.kind] ?? ROOM_BUILDERS.chamber;
+      fn(B, room);
+
+      const built = this._realiseRoom(room, B, spec, render, mats);
+      triangles += built.triangles;
+      draws += built.draws;
+
+      for (const c of B.colliders) allColliders.push(c);
+      for (const l of B.lights) allLights.push(l);
+      this._rooms.push(room);
+    }
+
+    // ---- practicals ----------------------------------------------------------
+    // Parented to `root`, NOT to a room group: a light inside a streamed-out
+    // group is invisible to the renderer but still counted by render's light
+    // budget, and the mismatch recompiles every material in the scene. See
+    // lighting.js.
+    this.practicals = new Practicals(this.root, render);
+    const landmarkList = Object.values(this.level.landmarks);
+    const lightCount = this.practicals.createAll(allLights, landmarkList);
+
+    // ---- collision -----------------------------------------------------------
+    this._colliderCount = allColliders.length;
+    this._staticIds = registerColliders(physics, allColliders, 'world');
+
+    // ---- streaming state -----------------------------------------------------
+    this._focus = new THREE.Vector3().copy(this.spawn);
+    this._camGround = new THREE.Vector3();
+    this._camDir = new THREE.Vector3();
+    this._currentRoom = null;
+    this._roomPayload = { room: null, cleared: false };
+    this._streamTick = 0;
+    this._hasPlayer = false;
+    this._offPlayer = ctx.events.on('player:state', (e) => {
+      if (e?.position) { this._focus.copy(e.position); this._hasPlayer = true; }
+    });
+    this._updateStreaming(true);
+
+    // ---- ready ---------------------------------------------------------------
+    // Reused payload: emitted once here, but `spawn` is a live reference other
+    // subsystems may hold on to.
+    this._ready = {
+      level: 1,
+      name: 'The Sunken Cathedral',
+      rooms: this.level.rooms.map((r) => ({
+        id: r.id, kind: r.kind, name: r.name,
+        x: r.x, z: r.z, y: r.y, w: r.w, d: r.d, yaw: r.yaw,
+        aabb: r.aabb, neighbours: r.neighbours, tags: r.tags,
+      })),
+      edges: this.level.edges,
+      criticalPath: this.level.criticalPath,
+      spawn: this.spawn,
+    };
+
+    this._buildMs = performance.now() - t0;
+    console.info(
+      `[world] "${this._ready.name}" seed 0x${(ctx.config.seed >>> 0).toString(16)} | ` +
+      `${this.level.rooms.length} rooms, ${draws} meshes, ${(triangles / 1000).toFixed(1)}k tris | ` +
+      `${lightCount} practicals, ${this._flameCount} flames | ` +
+      `${this._colliderCount} colliders (${colliderTriangles(allColliders)} tris) | ` +
+      `${this._buildMs.toFixed(0)}ms` +
+      (this.level.overlaps.length ? ` | WARNING overlapping rooms: ${JSON.stringify(this.level.overlaps)}` : '')
+    );
 
     ctx.events.emit('world:ready', this._ready);
   }
@@ -144,484 +189,416 @@ export class WorldSystem {
   // =========================================================================
 
   /**
-   * The floor: a 64 m flagstone slab whose UVs are its metre coordinates, with a
-   * few centimetres of long-wavelength sag baked into the vertices.
+   * The one material this subsystem invents: glowing coal.
    *
-   * The sag is not decoration. `floor.crypt` is a wet material, and a perfectly
-   * planar floor gives the entire specular lobe one identical normal, so a
-   * brazier reflects as a single symmetric blob. A ±4 cm undulation over a ~9 m
-   * period pools the highlight into streaks, which is the whole "damp flagstone"
-   * read that Diablo IV interiors are built on.
+   * The library has no "ember" recipe and inventing one is the materials agent's
+   * call, not ours. Registered with `render` so it is patched — and therefore
+   * bloom-eligible and AO-correct — before its first draw.
+   *
+   * `emissiveIntensity` is deliberately modest. The previous build ran the coal
+   * bed at ~1.14x `fire.core` on a smooth 0.34 m dome and it rendered as a flat
+   * white disc: past roughly 1.2x linear, the AgX shoulder has clipped all three
+   * channels, so every extra stop only widens the bloom halo and destroys the
+   * orange. The heat now comes from the flame's additive plume, which is small
+   * and has a real gradient; the coals only have to look hot, not bright.
    */
-  _buildFloor(mats, physics) {
-    const S = HALF * 2 + 12;
-    const geo = new THREE.PlaneGeometry(S, S, 64, 64);
-    geo.rotateX(-Math.PI / 2);
-
-    const pos = geo.attributes.position;
-    const uv = geo.attributes.uv;
-    for (let i = 0; i < pos.count; i++) {
-      const x = pos.getX(i), z = pos.getZ(i);
-      // Two incommensurate sine pairs: no visible repeat at this scale, no noise
-      // texture needed, and identical on every run.
-      pos.setY(
-        i,
-        Math.sin(x * 0.34) * Math.cos(z * 0.29) * 0.030 +
-        Math.sin(x * 0.11 + 1.7) * Math.sin(z * 0.13 - 0.6) * 0.045
-      );
-      uv.setXY(i, x, z);           // UVs in metres — the library's hard convention
-    }
-    geo.computeVertexNormals();
-    geo.computeBoundingSphere();
-    this._geometries.push(geo);
-
-    const floor = new THREE.Mesh(geo, mats.get('floor.crypt', { wet: 0.34, moss: 0.13 }));
-    floor.name = 'mn.world.floor';
-    floor.receiveShadow = true;
-    floor.castShadow = false;
-    this.root.add(floor);
-    this.floor = floor;
-
-    // 8k near-planar triangles would dominate the BVH for no accuracy at all.
-    // `box:true` is the documented escape hatch and gives a flat collider at y≈0.
-    this._addStatic(physics, floor, { surface: 'flagstone', box: true });
-  }
-
-  /**
-   * Perimeter walls: runs with a gate gap on +X (the `gate` landmark) and a
-   * corridor mouth on +Z, so `depth` has a real sightline to look down.
-   */
-  _buildWalls(mats, render, physics) {
-    const wallMat = mats.get('wall.block', { moss: 0.16, wet: 0.22 });
-
-    // [centre x, centre z, length, axis] — 'x' means the run extends along X.
-    const runs = [
-      [-8, -HALF, 36, 'x'],
-      [14, -HALF, 12, 'x'],
-      [-HALF, -6, 40, 'z'],
-      [-HALF, 20, 12, 'z'],
-      [-6, HALF, 40, 'x'],
-      [HALF, -14, 24, 'z'],
-      [HALF, 16, 20, 'z'],
-    ];
-
-    for (const run of runs) {
-      const [cx, cz, len, axis] = run;
-      const w = axis === 'x' ? len : WALL_T;
-      const d = axis === 'x' ? WALL_T : len;
-      const geo = boxUvMetres(new THREE.BoxGeometry(w, WALL_H, d), w, WALL_H, d);
-      this._geometries.push(geo);
-
-      const m = new THREE.Mesh(geo, wallMat);
-      m.name = 'mn.world.wall';
-      m.position.set(cx, WALL_H * 0.5, cz);
-      m.castShadow = true;
-      m.receiveShadow = true;
-      this.root.add(m);
-      this.walls.push(m);
-
-      // Registration is per mesh but the hole is per fragment, so a wall the
-      // player is merely near is unaffected — only the part genuinely between
-      // them and the camera opens.
-      render.registerOccluderFade(m);
-      this._addStatic(physics, m, { surface: 'stone', box: true });
-    }
-  }
-
-  /** Eight granite pillars. Round geometry has no usable UV layout for a tiling
-   *  stone, so these ask for triplanar and let the material project from world
-   *  space — which is exactly what the flag exists for. */
-  _buildColonnade(mats, physics) {
-    const mat = mats.get('wall.block', { triplanar: true, moss: 0.20, wet: 0.25 });
-    const shaftGeo = new THREE.CylinderGeometry(0.62, 0.78, 3.9, 12, 1);
-    const capGeo = new THREE.BoxGeometry(1.9, 0.42, 1.9);
-    this._geometries.push(shaftGeo, capGeo);
-
-    this.pillars = [];
-    for (let i = 0; i < 8; i++) {
-      const g = new THREE.Group();
-      g.position.set(i < 4 ? -9.5 : 9.5, 0, -13 + (i % 4) * 8.5);
-      // Every instance rotated differently so the triplanar projection samples a
-      // different part of the noise field per pillar; no two read alike.
-      g.rotation.y = this.rng.range(0, Math.PI * 2);
-
-      const shaft = new THREE.Mesh(shaftGeo, mat);
-      shaft.position.y = 1.95;
-      shaft.castShadow = shaft.receiveShadow = true;
-      g.add(shaft);
-
-      const top = new THREE.Mesh(capGeo, mat);
-      top.position.y = 4.05;
-      top.castShadow = top.receiveShadow = true;
-      g.add(top);
-
-      const base = new THREE.Mesh(capGeo, mat);
-      base.position.y = 0.21;
-      base.scale.setScalar(1.12);
-      base.castShadow = base.receiveShadow = true;
-      g.add(base);
-
-      this.root.add(g);
-      this.pillars.push(g);
-      this._addStatic(physics, shaft, { surface: 'stone', box: true });
-    }
-  }
-
-  /**
-   * The shadow shrine at (−8, −6): a raised dais and a rune monolith.
-   *
-   * This is the only place in the stub where the signature violet appears with
-   * no combat running, which is exactly what the `shrine` shot exists to review.
-   * The emissive colour comes from the `arcane.rune` recipe, which reads it out
-   * of `palette.ELEMENTS.shadow`; nothing here hardcodes a spell colour.
-   */
-  _buildShrine(mats, physics) {
-    const stone = mats.get('wall.block', { wet: 0.30, moss: 0.24 });
-    const rune = mats.get('arcane.rune', { emissive: 1.7, moss: 0.06 });
-
-    const stepGeo = boxUvMetres(new THREE.BoxGeometry(9.0, 0.22, 9.0), 9.0, 0.22, 9.0);
-    const daisGeo = boxUvMetres(new THREE.BoxGeometry(7.5, 0.42, 7.5), 7.5, 0.42, 7.5);
-    const monoGeo = boxUvMetres(new THREE.BoxGeometry(1.15, 3.4, 0.85), 1.15, 3.4, 0.85);
-    this._geometries.push(stepGeo, daisGeo, monoGeo);
-
-    const g = new THREE.Group();
-    g.position.set(-8, 0, -6);
-    g.rotation.y = 0.18;
-
-    const step = new THREE.Mesh(stepGeo, stone);
-    step.position.y = 0.11;
-    step.receiveShadow = true;
-    g.add(step);
-
-    const dais = new THREE.Mesh(daisGeo, stone);
-    dais.position.y = 0.43;
-    dais.castShadow = dais.receiveShadow = true;
-    g.add(dais);
-
-    const mono = new THREE.Mesh(monoGeo, rune);
-    mono.position.set(0, 2.34, 0);
-    mono.rotation.z = 0.035;              // nothing perfectly straight
-    mono.castShadow = mono.receiveShadow = true;
-    // The rune channels are the brightest thing in the shrine frame; push them
-    // into the bloom-only emissive buffer so they bleed like a magic source.
-    mono.userData.mnGlow = 1.4;
-    g.add(mono);
-
-    // A cold violet practical so the shrine lights its own dais. The one
-    // non-fire light in the level, and it uses the canonical rift colour.
-    const rift = new THREE.PointLight(
-      new THREE.Color().setRGB(
-        LIGHTS.shadowRift.color[0], LIGHTS.shadowRift.color[1], LIGHTS.shadowRift.color[2],
-        THREE.LinearSRGBColorSpace
-      ),
-      LIGHTS.shadowRift.intensity * 0.55,
-      LIGHTS.shadowRift.radius,
-      2
-    );
-    rift.position.set(0, 2.5, 0);
-    rift.name = 'mn.world.shrineRift';
-    g.add(rift);
-    this._riftLight = rift;
-
-    this.root.add(g);
-    this.shrine = g;
-    this._addStatic(physics, dais, { surface: 'stone', box: true });
-    this._addStatic(physics, mono, { surface: 'crystal', box: true });
-  }
-
-  /** Scattered rubble. Triplanar granite, every instance a different rotation and
-   *  a different non-uniform scale — "nothing repeated" applies to instances as
-   *  much as to texels. */
-  _buildRubble(mats, physics) {
-    const mat = mats.get('rubble.granite', { moss: 0.20, wet: 0.28 });
-    const geo = new THREE.IcosahedronGeometry(0.5, 0);
-    this._geometries.push(geo);
-
-    const COUNT = 34;
-    const inst = new THREE.InstancedMesh(geo, mat, COUNT);
-    inst.name = 'mn.world.rubble';
-    inst.castShadow = inst.receiveShadow = true;
-    inst.instanceMatrix.setUsage(THREE.StaticDrawUsage);
-
-    // Local scratch, used only during construction — not a per-frame allocation.
-    const m = new THREE.Matrix4();
-    const p = new THREE.Vector3();
-    const q = new THREE.Quaternion();
-    const e = new THREE.Euler();
-    const s = new THREE.Vector3();
-
-    for (let i = 0; i < COUNT; i++) {
-      // Kept off the centre so the player spawn and the shot framing are never
-      // blocked by a boulder sitting on the camera axis.
-      const a = this.rng.range(0, Math.PI * 2);
-      const r = this.rng.range(5.5, HALF - 3);
-      p.set(Math.cos(a) * r, this.rng.range(-0.12, 0.18), Math.sin(a) * r);
-      e.set(this.rng.range(0, 6.283), this.rng.range(0, 6.283), this.rng.range(0, 6.283));
-      q.setFromEuler(e);
-      const k = this.rng.range(0.45, 1.5);
-      s.set(k * this.rng.range(0.8, 1.3), k * this.rng.range(0.6, 1.0), k * this.rng.range(0.8, 1.3));
-      inst.setMatrixAt(i, m.compose(p, q, s));
-    }
-    inst.instanceMatrix.needsUpdate = true;
-    inst.computeBoundingSphere();
-
-    this.root.add(inst);
-    this.rubble = inst;
-    this._addStatic(physics, inst, { surface: 'stone', box: true });
-  }
-
-  /**
-   * The braziers — the key light of the whole level.
-   *
-   * ARCHITECTURE.md: "In a crypt the key IS the brazier — it must flicker, and
-   * everything near it must respond." `LIGHTS.brazier` supplies colour,
-   * intensity and cull radius; nothing here invents a value.
-   *
-   * TEN of them, at ~7-9 m spacing, so wherever the player stands two or three
-   * are inside their 11 m falloff and the room reads as lit rather than as a
-   * pool of light in a void.
-   *
-   * Ten and not more: this was tried at fourteen and the frame got WORSE, for a
-   * reason worth recording. Auto-exposure meters the frame and pins its average
-   * near 4% (TUNE.exposure.compensationEV = -2.35), so adding emitters does not
-   * lift the dark parts of the image — it stops the camera down and darkens
-   * them, while the extra fires spread the eye across a field of identical
-   * bright dots with no focal point. `analyze.mjs` measured the crushed
-   * fraction going UP, from 49% to 51%, on twice the light. The dark half of
-   * this frame is set by the exposure compensation and by the ambient floor
-   * `sky` provides, and no amount of world lighting will move it.
-   *
-   * Neither the light count nor the draw count is a problem, and both are worth
-   * spelling out because they look like they should be:
-   *
-   *  - LIGHTS: `LightBudget` freezes the point-light slot count at 8 before the
-   *    first material compiles, and every frame it ranks the real lights by
-   *    contribution at the camera focus and tops the visible count up with
-   *    zero-intensity ballast. Fourteen lights therefore change WHICH eight are
-   *    lit, never how many, and cost no shader permutation.
-   *  - DRAWS: the body is one LatheGeometry (a brazier is a surface of
-   *    revolution, so foot + stem + bowl are one profile, not three cylinders)
-   *    and both body and coal bed are InstancedMesh. Ten braziers are 2 draw
-   *    calls; five hand-built ones were 20.
-   */
-  _buildBraziers(mats, render, physics) {
-    const iron = mats.get('metal.brazier', { triplanar: true, soot: 0.9 });
-
-    // The one material in this file that is not from the library, because the
-    // library has no "glowing coal" recipe and inventing one is the materials
-    // agent's call, not the integration gate's. Registered with render so it is
-    // patched (and therefore bloom-eligible) before its first draw.
-    const emberMat = new THREE.MeshStandardMaterial({
-      color: new THREE.Color().setRGB(0.04, 0.012, 0.004, THREE.LinearSRGBColorSpace),
+  _makeEmberMaterial(render) {
+    const m = new THREE.MeshStandardMaterial({
+      color: new THREE.Color().setRGB(0.030, 0.010, 0.004, THREE.LinearSRGBColorSpace),
       emissive: new THREE.Color().setRGB(
         ELEMENTS.fire.core[0], ELEMENTS.fire.core[1], ELEMENTS.fire.core[2],
         THREE.LinearSRGBColorSpace
       ),
-      // Tuned by capture. `mnGlow` multiplies this again (x1.2 below), so the
-      // radiance reaching the tone mapper is ~1.14x fire.core. It started at
-      // 5.5 x 3.0 and the coal bed rendered as a flat white bulb: past roughly
-      // 5x, the AgX shoulder has clipped all three channels, so every extra stop
-      // only widens the bloom halo and destroys the orange.
-      emissiveIntensity: 0.95,
-      roughness: 0.85,
+      emissiveIntensity: 0.30,
+      roughness: 0.86,
       metalness: 0.0,
     });
-    emberMat.name = 'mn.world.ember';
-    render.registerMaterial(emberMat);
-    this._emberMat = emberMat;
-
-    // Lathe profile, in metres: (radius, height) up the silhouette. Foot, waist,
-    // stem, flare, bowl wall, rim, and back down the inside so the bowl is a
-    // real vessel rather than a solid cone seen from above.
-    const profile = [
-      new THREE.Vector2(0.00, 0.000),
-      new THREE.Vector2(0.50, 0.010),
-      new THREE.Vector2(0.48, 0.110),
-      new THREE.Vector2(0.19, 0.190),
-      new THREE.Vector2(0.105, 0.560),
-      new THREE.Vector2(0.135, 1.010),
-      new THREE.Vector2(0.30, 1.150),
-      new THREE.Vector2(0.58, 1.545),
-      new THREE.Vector2(0.545, 1.560),
-      new THREE.Vector2(0.27, 1.215),
-    ];
-    // 16 radial segments: at the hero boom a brazier is ~40 px across, so the
-    // facet count stops being visible well before 16 and every extra segment is
-    // 14 more triangles through a software rasteriser.
-    const bodyGeo = new THREE.LatheGeometry(profile, 16);
-    bodyGeo.computeVertexNormals();
-    // Sunk far enough that the dome's crown (y 1.50) sits BELOW the bowl rim
-    // (y 1.545). At the first attempt it stood proud of the rim and every
-    // brazier in the room read as a white ball on a stick; tucked inside, what
-    // you see is a bowl full of light, which is what a brazier is.
-    const emberGeo = new THREE.SphereGeometry(0.34, 14, 8, 0, Math.PI * 2, 0, Math.PI * 0.46);
-    this._geometries.push(bodyGeo, emberGeo);
-
-    // Hand-placed rather than scattered, because two constraints have to hold at
-    // once and rejection sampling for them is more code than the list:
-    //   - at least ~3 m from every debug landmark. The shot harness teleports
-    //     the player onto the landmark and frames it, so a brazier on top of one
-    //     puts a blown-out emissive dome in the middle of the review shot —
-    //     which is exactly what `detail` (boom 9.5) looked like before.
-    //   - at least ~1.6 m from a pillar and off the shrine dais.
-    const spots = [
-      [3.2, -2.4], [10.8, 9.6], [-6.6, -12.2], [-2.6, -15.4], [15.2, 4.6],
-      [-12.6, 6.4], [5.4, 13.2], [0.0, -8.0], [-14.0, -4.0], [13.5, -8.5],
-    ];
-
-    const bodies = new THREE.InstancedMesh(bodyGeo, iron, spots.length);
-    bodies.name = 'mn.world.brazier.body';
-    bodies.castShadow = bodies.receiveShadow = true;
-    bodies.instanceMatrix.setUsage(THREE.StaticDrawUsage);
-
-    const embers = new THREE.InstancedMesh(emberGeo, emberMat, spots.length);
-    embers.name = 'mn.world.brazier.ember';
-    // The coal bed IS the light source: it must not cast a shadow into the bowl
-    // it sits in, and it stays out of the shadow pass so nothing self-occludes.
-    embers.castShadow = false;
-    embers.receiveShadow = false;
-    embers.userData.mnNoShadow = true;
-    embers.userData.mnGlow = 1.2;
-    embers.instanceMatrix.setUsage(THREE.StaticDrawUsage);
-
-    // Construction-time scratch only — this whole function runs once in init().
-    const m = new THREE.Matrix4();
-    const p = new THREE.Vector3();
-    const q = new THREE.Quaternion();
-    const e = new THREE.Euler();
-    const one = new THREE.Vector3(1, 1, 1);
-
-    for (let i = 0; i < spots.length; i++) {
-      const x = spots[i][0], z = spots[i][1];
-
-      // A degree or two off plumb, different per instance. Nothing in a crypt is
-      // straight, and a row of perfectly vertical identical props is the single
-      // most obvious tell that a level was placed by a loop.
-      e.set(this.rng.range(-0.035, 0.035), this.rng.range(0, Math.PI * 2), this.rng.range(-0.035, 0.035));
-      q.setFromEuler(e);
-
-      p.set(x, 0, z);
-      bodies.setMatrixAt(i, m.compose(p, q, one));
-      // Same rotation for the coal bed, lifted to sit in the bowl — composing it
-      // from the same quaternion is what keeps the ember inside a tilted bowl.
-      p.set(x, 1.16, z);
-      embers.setMatrixAt(i, m.compose(p, q, one));
-
-      const light = new THREE.PointLight(
-        new THREE.Color().setRGB(
-          LIGHTS.brazier.color[0], LIGHTS.brazier.color[1], LIGHTS.brazier.color[2],
-          THREE.LinearSRGBColorSpace
-        ),
-        LIGHTS.brazier.intensity,
-        LIGHTS.brazier.radius,
-        2
-      );
-      light.position.set(x, 1.62, z);
-      light.name = 'mn.world.brazier';
-      light.matrixAutoUpdate = false;
-      light.updateMatrix();
-      this.root.add(light);
-      render.addLight(light);
-
-      this._braziers.push({
-        light,
-        base: LIGHTS.brazier.intensity,
-        // Phase drawn once from the seeded fork, never from the clock, so two
-        // captures of the same frame index show identical flames.
-        phase: this.rng.range(0, 100),
-        rate: this.rng.range(0.72, 1.18),
-      });
-    }
-
-    bodies.instanceMatrix.needsUpdate = true;
-    embers.instanceMatrix.needsUpdate = true;
-    bodies.computeBoundingSphere();
-    embers.computeBoundingSphere();
-    this.root.add(bodies);
-    this.root.add(embers);
-    this.brazierBodies = bodies;
-    this.brazierEmbers = embers;
-
-    // The whole instanced set as one collider: 14 boxes, one BVH object.
-    this._addStatic(physics, bodies, { surface: 'metal', box: true });
+    m.name = 'mn.world.ember';
+    render.registerMaterial(m);
+    return m;
   }
 
-  /** The single place that talks to physics, so a missing physics subsystem
-   *  degrades to "no collision" rather than a boot failure. */
-  _addStatic(physics, mesh, opts) {
-    if (!physics?.addStatic) return -1;
-    const id = physics.addStatic(mesh, opts);
-    if (id >= 0) this._staticIds.push(id);
-    return id;
+  /** Resolve a builder's logical material name to a real THREE material. */
+  _resolveMaterial(spec, logical, mats) {
+    if (logical === 'ember') return this._emberMat;
+    const s = spec[logical];
+    if (!s) return this._emberMat;
+    return mats.get(s.name, s.opts ?? undefined);
+  }
+
+  /**
+   * Turn one Builder's buckets into meshes under a room group.
+   *
+   * Mesh group semantics, which every room builder relies on:
+   *   'floor'  receives shadow, never casts, never fades
+   *   'far'    backdrop masonry: casts and receives
+   *   'near'   camera-side masonry: casts, receives, AND is registered for the
+   *            occluder fade with its own bounding sphere
+   *   'vault'  ceilings: registered for the fade for the same reason
+   *   'ember'  emissive coal: no shadow either way, pushed into the bloom buffer
+   *   'water'  never casts (a shadow from a water plane is nonsense) and stays
+   *            in the prepass so SSR can reflect off it
+   */
+  _realiseRoom(room, B, spec, render, mats) {
+    const group = new THREE.Group();
+    group.name = `mn.world.${room.id}`;
+    group.matrixAutoUpdate = false;
+    group.updateMatrix();
+    this.root.add(group);
+    room.group = group;
+
+    let triangles = 0;
+    let draws = 0;
+
+    for (const part of B.bucket.build()) {
+      const material = this._resolveMaterial(spec, part.mat, mats);
+      const mesh = new THREE.Mesh(part.geo, material);
+      mesh.name = `mn.world.${room.id}.${part.mat}.${part.group}`;
+      mesh.matrixAutoUpdate = false;
+      mesh.updateMatrix();
+      this._geometries.push(part.geo);
+      triangles += part.geo.attributes.position.count / 3;
+      draws++;
+
+      switch (part.group) {
+        case 'vault':
+          // CEILINGS DO NOT CAST SHADOWS. This is the single most important
+          // line in the file and it was found with `?renderview=normal`.
+          //
+          // A vault web is a single-sided surface wound to be seen from BELOW,
+          // so from this camera — which is 19 m above the floor looking down at
+          // 52 degrees — it is back-face culled and invisible. It was still in
+          // the shadow map, so every bay of vaulting laid a hard-edged,
+          // information-free black slab across the floor of the room underneath
+          // it, cast by geometry the player cannot see. Three of those slabs
+          // covered half the hero shot.
+          //
+          // An isometric game cannot roof its play space. Vaults here exist for
+          // the SILHOUETTE at the up-screen edge of a room, so they keep their
+          // geometry and lose their shadow. Contact darkening under an arch
+          // still happens, from render's GTAO, which is screen-space and
+          // therefore honest about what is actually visible.
+          mesh.castShadow = false;
+          mesh.receiveShadow = true;
+          mesh.userData.mnNoShadow = true;
+          break;
+        case 'floor':
+          mesh.castShadow = false; mesh.receiveShadow = true;
+          break;
+        case 'water':
+          mesh.castShadow = false; mesh.receiveShadow = true;
+          mesh.userData.mnNoShadow = true;
+          break;
+        case 'ember':
+          mesh.castShadow = false; mesh.receiveShadow = false;
+          mesh.userData.mnNoShadow = true;
+          // Into the bloom-only emissive buffer, so the coals bleed like a real
+          // source without their diffuse being lifted.
+          mesh.userData.mnGlow = 1.0;
+          break;
+        case 'rune':
+          mesh.castShadow = true; mesh.receiveShadow = true;
+          mesh.userData.mnGlow = 1.5;
+          break;
+        case 'cloth':
+          mesh.castShadow = true; mesh.receiveShadow = true;
+          break;
+        default:
+          mesh.castShadow = true; mesh.receiveShadow = true;
+          break;
+      }
+
+      // Registration is per mesh but the hole is per fragment, so a wall the
+      // player merely stands near is unaffected — only the part genuinely
+      // between them and the camera opens.
+      if (part.group === 'near' || part.group === 'vault') {
+        render.registerOccluderFade(mesh);
+        this._occluderMeshes.push(mesh);
+      }
+      group.add(mesh);
+    }
+
+    // ---- instanced debris ---------------------------------------------------
+    for (const list of B.instances.values()) {
+      if (!list.mats.length) continue;
+      let geo = this._debrisGeo.get(list.kind);
+      if (!geo) {
+        geo = debrisGeometry(list.kind, this.rng);
+        this._debrisGeo.set(list.kind, geo);
+        this._geometries.push(geo);
+      }
+      const material = this._resolveMaterial(spec, list.mat, mats);
+      const inst = new THREE.InstancedMesh(geo, material, list.mats.length);
+      inst.name = `mn.world.${room.id}.debris.${list.kind}`;
+      inst.instanceMatrix.setUsage(THREE.StaticDrawUsage);
+      for (let i = 0; i < list.mats.length; i++) inst.setMatrixAt(i, list.mats[i]);
+      inst.instanceMatrix.needsUpdate = true;
+      inst.computeBoundingSphere();
+      inst.castShadow = true;
+      inst.receiveShadow = true;
+      inst.matrixAutoUpdate = false;
+      inst.updateMatrix();
+      group.add(inst);
+      triangles += (geo.attributes.position.count / 3) * list.mats.length;
+      draws++;
+    }
+
+    // ---- flames -------------------------------------------------------------
+    // One mesh per room, all sharing one material, so a room that is streamed
+    // out costs nothing and `uTime` is written once for the whole level.
+    this._flameCount = (this._flameCount ?? 0) + B.flames.length;
+    const flameGeo = buildFlameGeometry(B.flames);
+    if (flameGeo) {
+      const mesh = new THREE.Mesh(flameGeo, this._flameMat);
+      mesh.name = `mn.world.${room.id}.flames`;
+      mesh.castShadow = false;
+      mesh.receiveShadow = false;
+      mesh.matrixAutoUpdate = false;
+      mesh.updateMatrix();
+      // Additive and depth-write-off already excludes it from the prepass, but
+      // saying so explicitly documents that a flame must not occlude, reflect or
+      // shade anything.
+      mesh.userData.mnNoPrepass = true;
+      mesh.userData.mnNoShadow = true;
+      // Drawn last within the room so it composites over the coals.
+      mesh.renderOrder = 5;
+      group.add(mesh);
+      this._geometries.push(flameGeo);
+      triangles += flameGeo.attributes.position.count / 3;
+      draws++;
+    }
+
+    return { triangles, draws };
   }
 
   // =========================================================================
   // frame
   // =========================================================================
 
-  /**
-   * Brazier flicker. Three sines at incommensurate rates give a flame's
-   * characteristic 1/f-ish wobble with no noise lookup and no allocation.
-   *
-   * Only the LIGHTS flicker. All ten coal beds share one instanced material
-   * so their emissive cannot vary per instance, and driving that one shared
-   * value would make every visible fire in the room pulse in lockstep — far more
-   * obviously wrong than a coal bed that holds steady while its light breathes.
-   * The eye reads flicker from what the light does to the floor, not from the
-   * ember. Animated per-ember brightness is `fx`'s job, along with the flame.
-   *
-   * Driven from `time.elapsed` (scaled), so hit-stop freezes the fire along with
-   * everything else — a flame that keeps flickering through a freeze frame is
-   * the most common tell that hit-stop was bolted on afterwards.
-   */
   update(dt, ctx) {
     const t = ctx.time.elapsed;
-    for (let i = 0; i < this._braziers.length; i++) {
-      const b = this._braziers[i];
-      const p = b.phase + t * b.rate;
-      b.light.intensity = b.base * (1 +
-        Math.sin(p * 7.3) * 0.055 +
-        Math.sin(p * 3.1 + 1.3) * 0.075 +
-        Math.sin(p * 1.7 + 2.9) * 0.055);
+    // Flicker and flame share one clock and one phase family, so the floor
+    // brightens on the same beat the plume leans. Both read `elapsed`, which is
+    // the SCALED clock, so hit-stop freezes the fire with everything else.
+    this.practicals.update(t, ctx.time.rawDt || dt);
+    this._flameMat.uniforms.uTime.value = t;
+
+    // Streaming is not free (one AABB test per room) but it is not per-frame
+    // work either: a player crosses a 34 m radius in about six seconds.
+    if ((this._streamTick++ & 7) === 0) this._updateStreaming(false);
+  }
+
+  /**
+   * Room streaming.
+   *
+   * A room outside the draw radius has `group.visible = false`, which removes it
+   * from `traverseVisible` entirely: no draw, no shadow-map pass, no MRT
+   * prepass, no material patching, no bounding-sphere maths. On a software
+   * rasteriser that is the single largest saving available, and it is why the
+   * level can be 80 m across.
+   *
+   * Hysteresis matters more than it looks: without it a player standing on the
+   * boundary toggles a room every frame, and every toggle invalidates the shadow
+   * map and re-collects the scene.
+   */
+  _updateStreaming(force) {
+    const ctx = this.ctx;
+    // Prefer the player; fall back to where the camera is actually looking, so
+    // a posed shot with no player still streams in the room it frames.
+    if (!this._hasPlayer) {
+      const cam = ctx.camera;
+      cam.getWorldDirection(this._camDir);
+      const t = this._camDir.y < -1e-3 ? -cam.position.y / this._camDir.y : 0;
+      this._camGround.copy(cam.position).addScaledVector(this._camDir, t);
+      this._focus.copy(this._camGround);
+    }
+
+    const fx = this._focus.x, fz = this._focus.z;
+    let inside = null;
+    let nearest = null;
+    let nearestD = Infinity;
+
+    for (const room of this._rooms) {
+      const a = room.aabb;
+      const dx = Math.max(a.minX - fx, 0, fx - a.maxX);
+      const dz = Math.max(a.minZ - fz, 0, fz - a.maxZ);
+      const d = Math.hypot(dx, dz);
+      // Hysteresis only applies to a room that was ALREADY drawn, and only on a
+      // steady-state pass. On the forced first call every group is still at its
+      // default `visible = true`, so honouring hysteresis there would widen the
+      // radius for every room in the level and stream the whole thing in.
+      const was = !force && room.group.visible;
+      const limit = STREAM.drawRadius + (was ? STREAM.hysteresis : 0);
+      room.group.visible = d <= limit;
+      if (d === 0 && inside === null) inside = room;
+      if (d < nearestD) { nearestD = d; nearest = room; }
+    }
+
+    // Always draw at least the nearest room, whatever the radius says — a debug
+    // landmark may legitimately sit just outside every AABB and an empty frame
+    // reads as a boot failure rather than as a framing mistake.
+    if (nearest) nearest.group.visible = true;
+
+    const current = inside ?? nearest;
+    if (current && (force || current !== this._currentRoom)) {
+      this._currentRoom = current;
+      this._roomPayload.room = current;
+      this._roomPayload.cleared = false;
+      ctx.events.emit('world:room', this._roomPayload);
+      // Per-room atmosphere. `sky` owns the fog model; we only say how thick the
+      // air is in this room, which is the difference between a flooded undercroft
+      // and a hall open to the night sky.
+      const sky = ctx.peek('sky');
+      if (sky?.setFogDensity) sky.setFogDensity(this._fogFor(current));
+      // Bounce fill follows the room: a sealed crypt gets a third of what a
+      // hall with half its vault missing gets. One hemisphere light, retuned —
+      // see tuning.js AMBIENT for why it is not one light per room.
+      this.practicals.setRoomFill(current.kind);
+      if (force) this.practicals.snapFill();
     }
   }
+
+  /** Fog multiplier per room kind. Thick where the air should read as damp and
+   *  thin where a long sightline has to survive it. */
+  _fogFor(room) {
+    switch (room.kind) {
+      case 'undercroft': return 1.9;
+      case 'corridor': return 1.35;
+      case 'passage': return 1.35;
+      case 'ossuary': return 1.15;
+      case 'chamber': return 1.1;
+      case 'arena': return 0.85;
+      case 'processional': return 0.75;
+      case 'shrine': return 1.05;
+      default: return 0.9;
+    }
+  }
+
+  // =========================================================================
+  // queries
+  // =========================================================================
+
+  /** The room containing a world point, or null. */
+  roomAt(x, z) {
+    for (const room of this._rooms) {
+      const a = room.aabb;
+      if (x >= a.minX && x <= a.maxX && z >= a.minZ && z <= a.maxZ) return room;
+    }
+    return null;
+  }
+
+  get currentRoom() { return this._currentRoom; }
 
   // =========================================================================
   // debug hooks (called only from src/dev/shots.js and tools/)
   // =========================================================================
 
+  /**
+   * Where the shot harness stands the player and points the camera.
+   *
+   * These five coordinates are the highest-leverage thing in this subsystem:
+   * every environment shot a critic sees is composed here. The rule for all of
+   * them is the same — the SUBJECT must be up-screen of the landmark, i.e. at
+   * −X −Z, because the camera eye sits at +X +Y +Z of its focus and that is the
+   * only half of the world it can see. See layout.js for what each one frames.
+   */
   debugFocus(name) {
-    return LANDMARKS[name] ?? LANDMARKS.hall;
+    const l = this.level.landmarks[name] ?? this.level.landmarks.hall;
+    return { pos: l, look: l };
   }
 
-  /** `clean` | `lit` | `dark`. Brazier gain only — the stub has no set dressing
-   *  to add or remove. */
+  /**
+   * `clean` | `lit` | `dark`. Brazier gain plus the debris pass, so a critic can
+   * separate "is the lighting wrong" from "is there too much stuff".
+   */
   debugStage(name) {
-    const gain = name === 'dark' ? 0.30 : name === 'lit' ? 1.55 : 1.0;
-    for (const b of this._braziers) b.base = LIGHTS.brazier.intensity * gain;
-    return name ?? 'clean';
+    const stage = name ?? 'clean';
+    this.practicals.setGain(stage === 'dark' ? 0.28 : stage === 'lit' ? 1.6 : 1.0);
+    this._flameMat.uniforms.uParams.value.x = stage === 'dark' ? 0.35 : stage === 'lit' ? 1.4 : 1.0;
+    return stage;
+  }
+
+  /**
+   * What is under this screen point?
+   *
+   * `node arpg/tools/probe.mjs --shot=hero --eval="ctx.peek('world').debugPick(-0.37,-0.11)"`
+   *
+   * Exists because "why is that part of the frame black" is not answerable from
+   * a screenshot: a shadow, a dark material and a piece of geometry the camera
+   * should not be seeing all look identical, and each has a completely different
+   * fix. NDC in [-1,1], y up. Dev only — it allocates.
+   */
+  debugPick(ndcX, ndcY, limit = 4) {
+    const rc = new THREE.Raycaster();
+    rc.setFromCamera(new THREE.Vector2(ndcX, ndcY), this.ctx.camera);
+    const hits = rc.intersectObject(this.ctx.scene, true);
+    return hits.slice(0, limit).map((h) => ({
+      name: h.object.name || h.object.type,
+      dist: +h.distance.toFixed(2),
+      point: [+h.point.x.toFixed(2), +h.point.y.toFixed(2), +h.point.z.toFixed(2)],
+      mat: h.object.material?.name || h.object.material?.userData?.mnSurface || '?',
+    }));
+  }
+
+  /** Force every room visible, for a whole-level overview screenshot. */
+  debugShowAll(on = true) {
+    for (const r of this._rooms) r.group.visible = !!on;
+    return this._rooms.length;
   }
 
   stats() {
+    let tris = 0, meshes = 0, visible = 0;
+    for (const r of this._rooms) {
+      if (r.group.visible) visible++;
+      r.group.traverse((o) => {
+        if (!o.isMesh) return;
+        meshes++;
+        const c = o.geometry?.attributes?.position?.count ?? 0;
+        tris += (c / 3) * (o.isInstancedMesh ? o.count : 1);
+      });
+    }
     return {
-      stub: true,
-      meshes: this.root.children.length,
-      braziers: this._braziers.length,
-      walls: this.walls.length,
-      colliders: this._staticIds.length,
-      geometries: this._geometries.length,
+      name: this._ready?.name,
+      seed: `0x${(this.ctx.config.seed >>> 0).toString(16)}`,
+      buildMs: +this._buildMs.toFixed(0),
+      rooms: this._rooms.length,
+      roomsVisible: visible,
+      meshes,
+      triangles: Math.round(tris),
+      colliders: this._colliderCount,
+      colliderTris: this._colliderCount * 12,
+      staticObjects: this._staticIds.length,
+      flames: this._flameCount ?? 0,
+      practicals: this.practicals.stats(),
+      occluders: this._occluderMeshes.length,
+      currentRoom: this._currentRoom?.id ?? null,
+      landmarks: this.level.landmarks,
+      overlaps: this.level.overlaps,
+      graph: this.level.edges.map((e) => `${e.a}-${e.b}${e.kind === 'loop' ? '*' : ''}`),
+      dress: Object.keys(DRESS),
     };
   }
 
   dispose() {
-    for (const g of this._geometries) g.dispose();
-    this._geometries.length = 0;
-    this._emberMat?.dispose();
+    this._offPlayer?.();
+    this.practicals?.dispose();
+
     const physics = this.ctx?.peek?.('physics');
     if (physics?.removeStatic) for (const id of this._staticIds) physics.removeStatic(id);
     this._staticIds.length = 0;
-    this._braziers.length = 0;
-    this.walls.length = 0;
+
+    for (const m of this._occluderMeshes) this.render?.unregisterOccluderFade?.(m);
+    this._occluderMeshes.length = 0;
+
+    for (const g of this._geometries) g.dispose();
+    this._geometries.length = 0;
+    for (const m of this._ownMaterials) m.dispose();
+    this._ownMaterials.length = 0;
+    this._debrisGeo.clear();
+    this._rooms.length = 0;
+
     this.root?.parent?.remove(this.root);
   }
 }
+
+void clamp;
