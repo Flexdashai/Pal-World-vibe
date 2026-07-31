@@ -144,6 +144,18 @@ export class PerfSystem {
     // Unscaled: hit-stop deliberately slows `dt`, and measuring quality against a
     // clock the game is intentionally distorting would drop settings every time
     // the player lands a heavy hit.
+    //
+    // CAVEAT worth knowing when reading a report from this scaler: rawDt is the
+    // interval between rAF callbacks, which equals real frame cost only while the
+    // driver keeps the command queue shallow — which is what vsync does on real
+    // hardware. Under a software rasteriser with the frame-rate limiter off, rAF
+    // runs ahead of a backed-up queue and rawDt measures callback cadence instead
+    // of render cost. A conclusion drawn from it in that environment is worthless,
+    // and one was: an early measurement here showed frame time unmoved as the
+    // ladder walked from 'mid+' to 'min', which was read as "the frame is CPU
+    // bound and resolution cannot help it". Direct measurement says the opposite —
+    // renderScale 1.0 to 0.5 is 8493 ms to 2775 ms, very close to linear in pixel
+    // count. The scaler works; the instrument used to check it did not.
     const ms = ctx.time.rawDt * 1000;
     this._frames++;
 
