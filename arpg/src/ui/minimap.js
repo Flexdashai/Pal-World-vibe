@@ -1,18 +1,34 @@
 /**
  * Minimap.
  *
- * Two things make a minimap useful rather than decorative, and both are here:
+ * Four things make a minimap useful rather than decorative, and all four were
+ * measured rather than assumed:
  *
- *  1. IT IS ROTATED TO MATCH THE CAMERA. The world camera is locked at 45
- *     degrees of yaw, so an axis-aligned map requires the player to mentally
- *     rotate it every time they read it. Rotating the map by -45 degrees means
- *     "up on the map" is "up on the screen", always.
+ *  1. IT IS ROTATED TO MATCH THE CAMERA. See `mapproj.js` — the rotation was a
+ *     quarter turn wrong and every direction on the dial disagreed with the
+ *     screen by ~88.6 degrees. The basis now lives in exactly one place.
  *
- *  2. FOG OF WAR IS PAINTED BY THE PLAYER, not queried from the level. `world`
- *     is not required to expose anything: the map maintains its own coarse
- *     occupancy grid and reveals cells as the player walks. If `world:ready`
- *     does supply rooms, they are drawn as outlines on top, and `world:room`
- *     marks them cleared — but the map is complete and correct without either.
+ *  2. IT REDRAWS WHEN THE PLAYER MOVES A PIXEL, not when they move a quarter of
+ *     a metre. The old gate was `moved < 0.25 m || accum < 0.16 s`, which
+ *     measured out at a 15 Hz redraw against a 60 Hz world: the dial stepped
+ *     rather than slid, and the terrain under the fixed centre arrow was up to
+ *     0.23 m (5.2 frames) stale. The gate is now expressed in DRAWN PIXELS, so
+ *     it is correct at every zoom and every UI scale, and it costs nothing when
+ *     the player is standing still.
+ *
+ *  3. FOG OF WAR IS PAINTED BY THE PLAYER, and it is SIZED FROM THE LEVEL. The
+ *     raster used to be a fixed 190 m square at the world origin, which fits
+ *     this level with 0 m to spare on a 137x147 m footprint — and another agent
+ *     is enlarging the world 2.5-4x in this same pass. `setRooms` now takes the
+ *     room graph from `world:ready`, bounds it, and rebuilds the raster around
+ *     that bound at a roughly constant metres-per-cell. `world` is still not
+ *     required to supply anything: with no rooms the map keeps its default
+ *     extent and is complete and correct.
+ *
+ *  4. THE ZOOM IS EXPRESSED IN METRES ACROSS THE DIAL, not in pixels per metre,
+ *     so it survives a resolution change, and the widest step is fitted to the
+ *     level so a player can always see the whole floor. `M` opens the
+ *     full-screen map; `Shift+M` cycles the dial's zoom.
  *
  * The revealed grid is kept as a GRID x GRID pixel canvas and blitted with
  * bilinear smoothing, which is both far cheaper than drawing a rect per cell
@@ -23,12 +39,48 @@ import { ELEMENTS, UI, RARITY } from '../core/palette.js';
 import { M, BRASS, alpha } from './theme.js';
 import { el, canvas as mkCanvas, setText } from './dom.js';
 import { bevelRing, rivet, tarnish, scroll, offscreen } from './ornament.js';
+import { MAP_COS, MAP_SIN, MAP_ROT, markerRotation, normaliseRoom, roomsBounds, roomsScreenBounds } from './mapproj.js';
 
-const GRID = 128;
-/** Metres covered by the whole grid. Bigger than any single dungeon floor so
- *  the player never walks off the edge of their own map. */
-const EXTENT = 190;
-const CELL = EXTENT / GRID;
+/** Fallback raster footprint before any level publishes its bounds. */
+const DEFAULT_EXTENT = 190;
+/** Metres per fog cell we aim for. The raster resolution follows the level so a
+ *  3x bigger dungeon does not get 3x coarser fog. */
+const TARGET_CELL = 1.3;
+const MIN_GRID = 96;
+/** 320^2 = 102k cells. A reveal touches only the disc, and the blit is a
+ *  downscale into a ~120 px circle, so this is bounded work either way. */
+const MAX_GRID = 320;
+
+/** Zoom steps, in METRES VISIBLE ACROSS THE DIAL. The last is fitted to the
+ *  level at `setRooms` time. 62 m is the default: about a room and its
+ *  neighbours, which is what a player steers by. */
+const VIEWS = [36, 62, 120];
+
+/**
+ * Every colour the live draw uses, resolved ONCE.
+ *
+ * `alpha()` parses a hex string and builds an `rgba(...)` literal, and the dial
+ * now redraws 60 times a second instead of 15 — a per-room `alpha(BRASS.mid,
+ * 0.55)` inside the draw loop is a string allocation per room per frame, which
+ * the contract forbids and a GC pause during a fight is exactly the kind of
+ * thing that reads as input lag.
+ */
+const COL = {
+  void: '#05050a',
+  roomFill: 'rgba(52,62,86,0.22)',
+  roomFillCleared: 'rgba(70,92,120,0.30)',
+  roomEdge: 'rgba(140,158,190,0.32)',
+  roomEdgeCleared: alpha(BRASS.mid, 0.55),
+  arrow: '#ffffff',
+  arrowEdge: 'rgba(0,0,0,0.85)',
+  arrowShadow: 'rgba(0,0,0,0.9)',
+};
+
+/** Reveal alphas, quantised to 24 steps and pre-stringified for the same
+ *  reason: `markExplored` writes a couple of hundred cells per call. */
+const FOG_STEPS = 24;
+const FOG_COL = Array.from({ length: FOG_STEPS + 1 }, (_, i) =>
+  `rgba(118,142,176,${(0.10 + (i / FOG_STEPS) * 0.24).toFixed(3)})`);
 
 export const BLIP = {
   enemy: { c: '#ff4a33', r: 2.1 },
@@ -57,21 +109,36 @@ export class MiniMap {
     this.elFloor = el('b', '', this.cap);
     this.elName = el('span', '', this.cap);
 
-    // fog-of-war raster
-    const f = offscreen(GRID, GRID);
+    // ---- fog-of-war raster --------------------------------------------------
+    // Geometry is mutable: `setRooms` re-sizes and re-centres it on the level.
+    this.grid = Math.round(DEFAULT_EXTENT / TARGET_CELL);
+    this.extent = DEFAULT_EXTENT;
+    this.cell = this.extent / this.grid;
+    this.originX = 0;
+    this.originZ = 0;
+    const f = offscreen(this.grid, this.grid);
     this.fogCv = f.cv;
     this.fog = f.c;
-    this.fog.clearRect(0, 0, GRID, GRID);
+    this.fog.clearRect(0, 0, this.grid, this.grid);
 
     this.rooms = [];
     this.blips = [];
+    this.bounds = null;
+    this.screenBounds = null;
     this.px = 0; this.pz = 0; this.pface = 0;
-    this.zoom = 2.55;              // pixels per metre at u = 1
+    this.views = VIEWS.slice();
+    this.viewIndex = 1;
+    this.viewM = this.views[this.viewIndex];
+    /** Pixels per metre at u = 1. Derived from `viewM` every draw; kept as a
+     *  field because the probe harness and the full map both read it. */
+    this.zoom = 2.55;
     this._baked = 0;
     this._dirty = true;
     this._lastDrawX = 1e9;
     this._lastDrawZ = 1e9;
     this._accum = 0;
+    this._draws = 0;
+    this._d = [0, 0];               // preallocated projection scratch
     this.rng = rng;
     setText(this.elFloor, 'B3');
     setText(this.elName, '  The Sunken Nave');
@@ -129,38 +196,133 @@ export class MiniMap {
     this._dirty = true;
   }
 
+  // =========================================================================
+  // fog raster geometry
+  // =========================================================================
+
+  /**
+   * Re-shape the raster around `bounds`, keeping metres-per-cell near
+   * TARGET_CELL. Returns true when the geometry actually changed (the caller
+   * must then repaint, because the old reveal does not survive a re-projection
+   * and pretending it does is worse than an honest wipe).
+   */
+  _sizeRaster(bounds) {
+    const span = Math.max(bounds.spanX, bounds.spanZ);
+    // 12% of headroom so a player who steps outside the room AABBs — a corridor
+    // stub, a knockback, a dash through a doorway — still paints fog.
+    const extent = Math.max(60, span * 1.12);
+    const grid = Math.max(MIN_GRID, Math.min(MAX_GRID, Math.round(extent / TARGET_CELL)));
+    const same = grid === this.grid
+      && Math.abs(extent - this.extent) < 0.5
+      && Math.abs(bounds.cx - this.originX) < 0.05
+      && Math.abs(bounds.cz - this.originZ) < 0.05;
+    if (same) return false;
+
+    this.extent = extent;
+    this.originX = bounds.cx;
+    this.originZ = bounds.cz;
+    this.cell = extent / grid;
+    if (grid !== this.grid) {
+      this.grid = grid;
+      this.fogCv.width = grid;
+      this.fogCv.height = grid;
+    }
+    this.fog.clearRect(0, 0, this.grid, this.grid);
+    this._dirty = true;
+    return true;
+  }
+
+  /** World AABB the raster can record, for introspection and the full map. */
+  fogBounds() {
+    const h = this.extent * 0.5;
+    return {
+      minX: this.originX - h, maxX: this.originX + h,
+      minZ: this.originZ - h, maxZ: this.originZ + h,
+      extent: this.extent, grid: this.grid, cell: this.cell,
+    };
+  }
+
   /** Reveal a disc of the grid. Called from the player's position each frame;
    *  cheap because it only touches the cells inside the radius. */
   markExplored(x, z, radius = 9) {
-    const gx = Math.round((x + EXTENT * 0.5) / CELL);
-    const gz = Math.round((z + EXTENT * 0.5) / CELL);
+    const G = this.grid, CELL = this.cell;
+    const gx = Math.round((x - this.originX + this.extent * 0.5) / CELL);
+    const gz = Math.round((z - this.originZ + this.extent * 0.5) / CELL);
     const r = Math.ceil(radius / CELL);
-    if (gx < -r || gz < -r || gx > GRID + r || gz > GRID + r) return;
+    if (gx < -r || gz < -r || gx > G + r || gz > G + r) return;
     const c = this.fog;
     for (let dz = -r; dz <= r; dz++) {
       for (let dx = -r; dx <= r; dx++) {
         if (dx * dx + dz * dz > r * r) continue;
         const ax = gx + dx, az = gz + dz;
-        if (ax < 0 || az < 0 || ax >= GRID || az >= GRID) continue;
+        if (ax < 0 || az < 0 || ax >= G || az >= G) continue;
         // Falloff so the reveal edge is soft rather than a hard disc. The fog
         // raster is drawn in COLD STONE, not white, because it is composited
         // with `lighter` over the void — a white raster would produce a grey
         // map and lose the "damp cold masonry" read the rest of the game has.
         const t = 1 - Math.sqrt(dx * dx + dz * dz) / (r + 0.001);
-        c.fillStyle = `rgba(118,142,176,${(0.10 + t * 0.24).toFixed(3)})`;
+        c.fillStyle = FOG_COL[(t * FOG_STEPS) | 0];
         c.fillRect(ax, az, 1, 1);
       }
     }
+    this._markSeen(x, z);
     this._dirty = true;
   }
 
-  /** Accept whatever shape `world:ready` supplies. Rooms are optional. */
+  /**
+   * Flag the room the player is standing in as visited, which is what lets the
+   * full-screen map name it. Point-in-ROTATED-rect, because five of this
+   * level's rooms are at 45 degrees and an axis-aligned test names the wrong
+   * one when two of them are adjacent.
+   */
+  _markSeen(x, z) {
+    for (const r of this.rooms) {
+      if (r.seen) continue;
+      let dx = x - r.x, dz = z - r.z;
+      if (r.rot) {
+        const cs = Math.cos(-r.rot), sn = Math.sin(-r.rot);
+        const rx = dx * cs - dz * sn;
+        dz = dx * sn + dz * cs;
+        dx = rx;
+      }
+      if (Math.abs(dx) <= r.hw + 1.5 && Math.abs(dz) <= r.hh + 1.5) { r.seen = true; this._dirty = true; }
+    }
+  }
+
+  /** Alpha 0..1 already revealed at a world point. Introspection only — this
+   *  allocates an ImageData and must never be called from a frame. */
+  exploredAt(x, z) {
+    const gx = Math.round((x - this.originX + this.extent * 0.5) / this.cell);
+    const gz = Math.round((z - this.originZ + this.extent * 0.5) / this.cell);
+    if (gx < 0 || gz < 0 || gx >= this.grid || gz >= this.grid) return -1;
+    return this.fog.getImageData(gx, gz, 1, 1).data[3] / 255;
+  }
+
+  // =========================================================================
+  // level data
+  // =========================================================================
+
+  /**
+   * Accept whatever shape `world:ready` supplies. Rooms are optional — but when
+   * they are present they define how big the map has to be, which is the only
+   * way this widget survives the level growing under it.
+   */
   setRooms(rooms) {
     this.rooms.length = 0;
-    if (!Array.isArray(rooms)) return;
-    for (const r of rooms) {
-      const box = normaliseRoom(r);
-      if (box) this.rooms.push(box);
+    if (Array.isArray(rooms)) {
+      for (const r of rooms) {
+        const box = normaliseRoom(r);
+        if (box) this.rooms.push(box);
+      }
+    }
+    this.bounds = roomsBounds(this.rooms, 6);
+    // The map-space footprint too: it is what the full-screen map fits to.
+    this.screenBounds = roomsScreenBounds(this.rooms, 6);
+    if (this.bounds) {
+      this._sizeRaster(this.bounds);
+      // Widest zoom step fits the whole floor on the dial, whatever size it is.
+      this.views[2] = Math.max(this.views[1] + 20, Math.min(320, Math.max(this.bounds.spanX, this.bounds.spanZ) * 1.08));
+      this.viewM = this.views[this.viewIndex];
     }
     this._dirty = true;
   }
@@ -169,6 +331,7 @@ export class MiniMap {
     const box = normaliseRoom(room);
     if (!box) return;
     for (const r of this.rooms) {
+      if (box.id !== undefined && r.id === box.id) { r.cleared = true; this._dirty = true; return; }
       if (Math.abs(r.x - box.x) < 0.6 && Math.abs(r.z - box.z) < 0.6) { r.cleared = true; this._dirty = true; return; }
     }
     box.cleared = true;
@@ -192,20 +355,40 @@ export class MiniMap {
     setText(this.elName, `  ${name}`);
   }
 
+  // =========================================================================
+  // zoom
+  // =========================================================================
+
+  /** Metres visible across the dial. */
+  setView(metres) {
+    this.viewM = Math.max(12, metres);
+    this._dirty = true;
+  }
+
+  cycleZoom() {
+    this.viewIndex = (this.viewIndex + 1) % this.views.length;
+    this.setView(this.views[this.viewIndex]);
+    return Math.round(this.viewM);
+  }
+
   /** Wipe the fog and the layout — used when a new level loads. */
   reset() {
-    this.fog.clearRect(0, 0, GRID, GRID);
+    this.fog.clearRect(0, 0, this.grid, this.grid);
     this.rooms.length = 0;
     this.blips.length = 0;
+    this._lastDrawX = 1e9;
+    this._lastDrawZ = 1e9;
     this._dirty = true;
   }
 
   /** Paint a whole layout at once (the synthetic map used by debugState). */
   paintCells(fn) {
-    this.fog.clearRect(0, 0, GRID, GRID);
-    for (let z = 0; z < GRID; z++) {
-      for (let x = 0; x < GRID; x++) {
-        const v = fn(x * CELL - EXTENT * 0.5, z * CELL - EXTENT * 0.5);
+    const G = this.grid, CELL = this.cell;
+    const x0 = this.originX - this.extent * 0.5, z0 = this.originZ - this.extent * 0.5;
+    this.fog.clearRect(0, 0, G, G);
+    for (let z = 0; z < G; z++) {
+      for (let x = 0; x < G; x++) {
+        const v = fn(x0 + x * CELL, z0 + z * CELL);
         if (v > 0) {
           this.fog.fillStyle = `rgba(118,142,176,${Math.min(1, v).toFixed(3)})`;
           this.fog.fillRect(x, z, 1, 1);
@@ -215,15 +398,32 @@ export class MiniMap {
     this._dirty = true;
   }
 
+  // =========================================================================
+  // frame
+  // =========================================================================
+
   update(dt, u) {
     this._accum += dt;
-    // Redraw when the player has moved meaningfully or 6 Hz, whichever first.
-    const moved = Math.abs(this.px - this._lastDrawX) + Math.abs(this.pz - this._lastDrawZ);
-    if (!this._dirty && moved < 0.25 && this._accum < 0.16) return;
+    // THE REDRAW GATE, IN DRAWN PIXELS.
+    //
+    // The old gate was 0.25 m of Manhattan movement or 6 Hz. Measured at a 2.66
+    // m/s walk that produced a 15 Hz redraw and left the terrain under the fixed
+    // centre arrow up to 0.229 m (5.2 frames) behind the hero. Expressed in
+    // metres the threshold is also wrong at every zoom but one.
+    //
+    // The threshold is 0.05 px, which in practice means "redraw on every frame
+    // the hero is moving at all and on none of the frames they are not". A
+    // redraw was measured at 0.045 ms — 0.27% of a 16.7 ms frame — so there is
+    // nothing to buy by being clever, and a gate loose enough to be worth the
+    // saving is loose enough to see.
+    const ppm = this.R ? (this.R * 2) / this.viewM : this.zoom * u;
+    const movedPx = Math.hypot(this.px - this._lastDrawX, this.pz - this._lastDrawZ) * ppm;
+    if (!this._dirty && movedPx < 0.05 && this._accum < 0.16) return;
     this._accum = 0;
     this._lastDrawX = this.px;
     this._lastDrawZ = this.pz;
     this._dirty = false;
+    this._draws++;
     this._draw(u);
   }
 
@@ -233,20 +433,24 @@ export class MiniMap {
     if (!S) return;
     const cx = S * 0.5, cy = S * 0.5;
     const R = this.R;
-    const ppm = this.zoom * u;
+    // Pixels per metre from the zoom expressed in metres-across, so the dial
+    // shows the same slice of world at every resolution and every UI scale.
+    const ppm = (R * 2) / this.viewM;
+    this.zoom = ppm / Math.max(1e-3, u);
 
     c.clearRect(0, 0, S, S);
     c.save();                                          // A: the circular clip
     c.beginPath(); c.arc(cx, cy, R, 0, Math.PI * 2); c.clip();
 
     // base: unexplored void
-    c.fillStyle = '#05050a';
+    c.fillStyle = COL.void;
     c.fillRect(0, 0, S, S);
 
     c.save();                                          // B: world space
     c.translate(cx, cy);
-    // -45 degrees aligns map-up with screen-up under the fixed camera yaw.
-    c.rotate(-Math.PI * 0.25);
+    // +45 degrees: see mapproj.js. This was -45 and the whole dial was a
+    // quarter turn out of register with the screen.
+    c.rotate(MAP_ROT);
     c.scale(ppm, ppm);
     c.translate(-this.px, -this.pz);
 
@@ -255,27 +459,33 @@ export class MiniMap {
     c.imageSmoothingEnabled = true;
     c.globalCompositeOperation = 'lighter';
     c.globalAlpha = 0.95;
-    // The fog raster covers [-EXTENT/2, +EXTENT/2] in both axes.
-    c.drawImage(this.fogCv, -EXTENT * 0.5, -EXTENT * 0.5, EXTENT, EXTENT);
+    const h = this.extent * 0.5;
+    c.drawImage(this.fogCv, this.originX - h, this.originZ - h, this.extent, this.extent);
     c.restore();
 
     // --- rooms --------------------------------------------------------------
-    c.lineWidth = 0.42;
+    // Cull against what the dial can actually show, not a constant: at the
+    // fitted zoom the visible radius is the whole level.
+    const viewR = this.viewM * 0.78;
+    c.lineWidth = Math.max(0.06, 0.9 / ppm);
     for (const r of this.rooms) {
-      if (Math.abs(r.x - this.px) > 60 || Math.abs(r.z - this.pz) > 60) continue;
-      c.fillStyle = r.cleared ? 'rgba(70,92,120,0.30)' : 'rgba(52,62,86,0.22)';
-      c.fillRect(r.x - r.hw, r.z - r.hh, r.hw * 2, r.hh * 2);
-      c.strokeStyle = r.cleared ? alpha(BRASS.mid, 0.55) : 'rgba(140,158,190,0.32)';
-      c.strokeRect(r.x - r.hw, r.z - r.hh, r.hw * 2, r.hh * 2);
+      if (Math.abs(r.x - this.px) > viewR + r.hw || Math.abs(r.z - this.pz) > viewR + r.hh) continue;
+      c.save();
+      c.translate(r.x, r.z);
+      if (r.rot) c.rotate(r.rot);
+      c.fillStyle = r.cleared ? COL.roomFillCleared : COL.roomFill;
+      c.fillRect(-r.hw, -r.hh, r.hw * 2, r.hh * 2);
+      c.strokeStyle = r.cleared ? COL.roomEdgeCleared : COL.roomEdge;
+      c.strokeRect(-r.hw, -r.hh, r.hw * 2, r.hh * 2);
+      c.restore();
     }
     c.restore();                                       // B: back to screen space
 
     // --- blips (screen space, so the dots stay round and crisp) --------------
-    const cos = Math.cos(-Math.PI * 0.25), sin = Math.sin(-Math.PI * 0.25);
     for (const b of this.blips) {
       const dx = (b.x - this.px) * ppm, dz = (b.z - this.pz) * ppm;
-      const sx = cx + dx * cos - dz * sin;
-      const sy = cy + dx * sin + dz * cos;
+      const sx = cx + dx * MAP_COS - dz * MAP_SIN;
+      const sy = cy + dx * MAP_SIN + dz * MAP_COS;
       if ((sx - cx) ** 2 + (sy - cy) ** 2 > (R - 3) ** 2) continue;
       const k = BLIP[b.type] ?? BLIP.enemy;
       c.fillStyle = k.c;
@@ -290,18 +500,18 @@ export class MiniMap {
     // --- the player: an arrow, always pointing where they face --------------
     c.save();
     c.translate(cx, cy);
-    c.rotate(this.pface - Math.PI * 0.25);
+    c.rotate(markerRotation(this.pface));
     c.beginPath();
     c.moveTo(0, -6.4 * u);
     c.lineTo(4.4 * u, 5.2 * u);
     c.lineTo(0, 2.6 * u);
     c.lineTo(-4.4 * u, 5.2 * u);
     c.closePath();
-    c.fillStyle = '#ffffff';
-    c.shadowColor = 'rgba(0,0,0,0.9)';
+    c.fillStyle = COL.arrow;
+    c.shadowColor = COL.arrowShadow;
     c.shadowBlur = 4 * u;
     c.fill();
-    c.strokeStyle = 'rgba(0,0,0,0.85)';
+    c.strokeStyle = COL.arrowEdge;
     c.lineWidth = 1 * u;
     c.stroke();
     c.restore();
@@ -313,35 +523,17 @@ export class MiniMap {
     c.restore();                                       // A
   }
 
+  stats() {
+    return {
+      viewMetres: +this.viewM.toFixed(1),
+      pxPerMetre: +this.zoom.toFixed(3),
+      draws: this._draws,
+      fog: this.fogBounds(),
+      rooms: this.rooms.length,
+    };
+  }
+
   dispose() { this.root.remove(); }
 }
 
-/** Duck-type whatever `world` puts in `world:ready`. Returns {x,z,hw,hh}. */
-function normaliseRoom(r) {
-  if (!r) return null;
-  if (typeof r.x === 'number' && typeof r.z === 'number') {
-    if (typeof r.w === 'number' && typeof r.h === 'number') {
-      return { x: r.x, z: r.z, hw: Math.abs(r.w) * 0.5, hh: Math.abs(r.h) * 0.5, cleared: !!r.cleared };
-    }
-    if (typeof r.hw === 'number') return { x: r.x, z: r.z, hw: r.hw, hh: r.hh ?? r.hw, cleared: !!r.cleared };
-  }
-  if (r.min && r.max) {
-    return {
-      x: (r.min.x + r.max.x) * 0.5, z: (r.min.z + r.max.z) * 0.5,
-      hw: Math.abs(r.max.x - r.min.x) * 0.5, hh: Math.abs(r.max.z - r.min.z) * 0.5,
-      cleared: !!r.cleared,
-    };
-  }
-  if (r.center && r.size) {
-    return {
-      x: r.center.x, z: r.center.z,
-      hw: Math.abs(r.size.x) * 0.5, hh: Math.abs(r.size.z) * 0.5, cleared: !!r.cleared,
-    };
-  }
-  if (r.position && typeof r.radius === 'number') {
-    return { x: r.position.x, z: r.position.z, hw: r.radius, hh: r.radius, cleared: !!r.cleared };
-  }
-  return null;
-}
-
-export { GRID as MAP_GRID, EXTENT as MAP_EXTENT, CELL as MAP_CELL };
+export { normaliseRoom };

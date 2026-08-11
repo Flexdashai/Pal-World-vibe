@@ -435,6 +435,43 @@ export function buildCss() {
 .mn-map .cap b { color: ${TEXT.gold}; font-weight: 700; }
 
 /* ========================================================================= */
+/* full-screen map (M)                                                        */
+/* ========================================================================= */
+/* pointer-events stays none and the scrim stops well short of opaque: the game
+   keeps running underneath and the player must still be able to see something
+   walking at them. z-index sits BELOW the inventory panel so opening a panel
+   over the map reads correctly. */
+.mn-wmap {
+  position: absolute; inset: 0; z-index: 48;
+  display: none; pointer-events: none;
+}
+.mn-wmap.on { display: block; }
+.mn-wmap .scrim {
+  position: absolute; inset: 0;
+  background:
+    radial-gradient(ellipse at 50% 46%, ${alpha('#0a0a14', .62)} 0%, ${alpha('#04040a', .90)} 78%),
+    linear-gradient(180deg, ${alpha('#05060c', .72)}, ${alpha('#030307', .88)});
+}
+.mn-wmap .plate { position: absolute; inset: 0; width: 100%; height: 100%; }
+.mn-wmap .hd {
+  position: absolute; left: 50%; top: calc(26 * var(--u)); transform: translateX(-50%);
+  padding: calc(4 * var(--u)) calc(30 * var(--u));
+  font-family: ${FONT.display}; font-size: calc(15 * var(--u));
+  letter-spacing: .34em; text-indent: .34em; text-transform: uppercase;
+  color: #f2e6c8; white-space: nowrap;
+  background: linear-gradient(180deg, ${alpha(BRASS.dark, .95)}, ${alpha('#0a0810', .95)});
+  border: 1px solid ${alpha(BRASS.base, .8)};
+  box-shadow: 0 calc(3 * var(--u)) calc(12 * var(--u)) rgba(0,0,0,.85), inset 0 1px 0 ${alpha(BRASS.warm, .5)};
+  text-shadow: ${SHADOW_TEXT};
+}
+.mn-wmap .hd b { color: ${TEXT.gold}; font-weight: 700; }
+.mn-wmap .hint {
+  position: absolute; left: 50%; bottom: calc(26 * var(--u)); transform: translateX(-50%);
+  font-size: calc(9.5 * var(--u)); letter-spacing: .3em; text-transform: uppercase;
+  color: ${alpha(TEXT.dim, .8)}; white-space: pre; text-shadow: ${SHADOW_TEXT};
+}
+
+/* ========================================================================= */
 /* shadow army roster (top-left) — the Solo Leveling status readout           */
 /* ========================================================================= */
 .mn-shadows {

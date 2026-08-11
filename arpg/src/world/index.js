@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { ELEMENTS } from '../core/palette.js';
 import { STREAM, DRESS } from './tuning.js';
 import { generateLevel } from './layout.js';
-import { Builder, ROOM_BUILDERS, materialsFor } from './build.js';
+import { Builder, ROOM_BUILDERS, materialsFor, buildThroat } from './build.js';
 import { debrisGeometry } from './props.js';
 import { createFlameMaterial, buildFlameGeometry } from './fire.js';
 import { Practicals } from './lighting.js';
@@ -21,8 +21,12 @@ import { registerColliders, colliderTriangles } from './collision.js';
  * from this directory.
  *
  *   w.debugFocus(name)   -> { pos:[x,y,z], look:[x,y,z] }
- *                           'hall' | 'corridor' | 'shrine' | 'arena' | 'gate'
+ *                           'hall' | 'corridor' | 'shrine' | 'arena' | 'gate' |
+ *                           'vista' | 'gallery' | 'cloister' | 'reliquary' |
+ *                           'nave' | 'span' | 'catacomb' | 'cistern'
  *   w.debugStage(name)   -> 'clean' | 'lit' | 'dark'
+ *   w.debugReach()       -> connectivity from the spawn, measured against the
+ *                           real colliders. See its header.
  *   w.level              -> the generated room graph (see layout.js)
  *   w.roomAt(x, z)       -> the room containing a point, or null
  *   w.spawn              -> THREE.Vector3, the player start
@@ -119,6 +123,10 @@ export class WorldSystem {
       const B = new Builder(room, this.rng, spec);
       const fn = ROOM_BUILDERS[room.kind] ?? ROOM_BUILDERS.chamber;
       fn(B, room);
+      // The doorways. Built AFTER the room so a throat's floor and its flight of
+      // steps overwrite whatever the perimeter put there, and built by exactly
+      // one of the two rooms a link joins so the geometry exists once.
+      for (const L of room.links) if (L.owner === room.id) buildThroat(B, L);
 
       const built = this._realiseRoom(room, B, spec, render, mats);
       triangles += built.triangles;
@@ -148,6 +156,9 @@ export class WorldSystem {
     this._camDir = new THREE.Vector3();
     this._currentRoom = null;
     this._roomPayload = { room: null, cleared: false };
+    /** Preallocated scratch for the streaming sort — one slot per room. */
+    this._streamOrder = this._rooms.map(() => ({ room: null, d: 0 }));
+    this._roomsDrawn = 0;
     this._streamTick = 0;
     this._hasPlayer = false;
     this._offPlayer = ctx.events.on('player:state', (e) => {
@@ -164,9 +175,20 @@ export class WorldSystem {
       rooms: this.level.rooms.map((r) => ({
         id: r.id, kind: r.kind, name: r.name,
         x: r.x, z: r.z, y: r.y, w: r.w, d: r.d, yaw: r.yaw,
+        // `hw`/`hh` are the AABB half-extents and they are not decoration: this
+        // is the only shape `ui`'s minimap can duck-type. It reads
+        // `{x, z, w, h}` or `{x, z, hw, hh}`, was handed `{x, z, w, d}`, matched
+        // neither, and silently dropped EVERY room — so the minimap has been
+        // drawing fog-of-war over an empty layout. Half-extents rather than
+        // `w`/`d` because five rooms here are at 45 degrees and their plan
+        // footprint is not their dimensions.
+        hw: r.hw, hh: r.hh,
         aabb: r.aabb, neighbours: r.neighbours, tags: r.tags,
       })),
       edges: this.level.edges,
+      links: this.level.links.map((L) => ({
+        a: L.a, b: L.b, kind: L.kind, x: L.x, z: L.z, width: L.width,
+      })),
       criticalPath: this.level.criticalPath,
       spawn: this.spawn,
     };
@@ -418,6 +440,8 @@ export class WorldSystem {
     let nearest = null;
     let nearestD = Infinity;
 
+    const order = this._streamOrder;
+    let n = 0;
     for (const room of this._rooms) {
       const a = room.aabb;
       const dx = Math.max(a.minX - fx, 0, fx - a.maxX);
@@ -430,14 +454,35 @@ export class WorldSystem {
       const was = !force && room.group.visible;
       const limit = STREAM.drawRadius + (was ? STREAM.hysteresis : 0);
       room.group.visible = d <= limit;
+      if (room.group.visible) {
+        // Preallocated: `order` is sized to the room count in init(), so this
+        // whole pass allocates nothing however many rooms are in range.
+        order[n].room = room; order[n].d = d; n++;
+      }
       if (d === 0 && inside === null) inside = room;
       if (d < nearestD) { nearestD = d; nearest = room; }
     }
 
+    // HARD CAP, applied after the radius. See STREAM.maxRooms: a radius alone
+    // does not bound the frame, it bounds the DISTANCE, and at a junction where
+    // four rooms meet the two are not the same thing. Insertion sort because n
+    // is single digits and `Array.sort` on a subrange would need a slice.
+    if (n > STREAM.maxRooms) {
+      for (let i = 1; i < n; i++) {
+        const r = order[i].room, d = order[i].d;
+        let j = i - 1;
+        while (j >= 0 && order[j].d > d) { order[j + 1].room = order[j].room; order[j + 1].d = order[j].d; j--; }
+        order[j + 1].room = r; order[j + 1].d = d;
+      }
+      for (let i = STREAM.maxRooms; i < n; i++) order[i].room.group.visible = false;
+      n = STREAM.maxRooms;
+    }
+    this._roomsDrawn = n;
+
     // Always draw at least the nearest room, whatever the radius says — a debug
     // landmark may legitimately sit just outside every AABB and an empty frame
     // reads as a boot failure rather than as a framing mistake.
-    if (nearest) nearest.group.visible = true;
+    if (nearest && !nearest.group.visible) { nearest.group.visible = true; this._roomsDrawn++; }
 
     const current = inside ?? nearest;
     if (current && (force || current !== this._currentRoom)) {
@@ -475,6 +520,14 @@ export class WorldSystem {
       case 'arena': return 0.95;
       case 'processional': return 0.85;
       case 'shrine': return 1.20;
+      case 'catacomb': return 1.45;
+      // The roofless rooms. Thin air, because their whole job is the long view:
+      // a courtyard you cannot see across is just a dark room with no ceiling.
+      case 'cloister': return 0.62;
+      case 'nave': return 0.68;
+      case 'bridge': return 0.55;
+      case 'gallery': return 0.95;
+      case 'reliquary': return 1.05;
       default: return 1.25;
     }
   }
@@ -483,13 +536,32 @@ export class WorldSystem {
   // queries
   // =========================================================================
 
-  /** The room containing a world point, or null. */
+  /**
+   * The room containing a world point, or null.
+   *
+   * TWO PASSES, AND THE ORDER MATTERS. A room at 45 degrees has an axis-aligned
+   * bounding box 1.4x its real footprint, so the crypt corridor's AABB entirely
+   * contains the side cell's — an AABB-only test returned `crypt` for every
+   * point in the cell, which is wrong for the `world:room` event, wrong for the
+   * per-room fog and the bounce fill, and wrong for anything that asks where the
+   * player is. So the ROTATED rectangle is tested first and the AABB is only the
+   * fallback, for the doorways and thresholds that sit outside every rectangle.
+   */
   roomAt(x, z) {
     for (const room of this._rooms) {
-      const a = room.aabb;
-      if (x >= a.minX && x <= a.maxX && z >= a.minZ && z <= a.maxZ) return room;
+      const dx = x - room.x, dz = z - room.z;
+      const c = Math.cos(room.yaw), s = Math.sin(room.yaw);
+      const lx = c * dx - s * dz, lz = s * dx + c * dz;
+      if (Math.abs(lx) <= room.w * 0.5 + 0.9 && Math.abs(lz) <= room.d * 0.5 + 0.9) return room;
     }
-    return null;
+    let best = null, bestD = Infinity;
+    for (const room of this._rooms) {
+      const a = room.aabb;
+      if (x < a.minX || x > a.maxX || z < a.minZ || z > a.maxZ) continue;
+      const d = (x - room.x) * (x - room.x) + (z - room.z) * (z - room.z);
+      if (d < bestD) { bestD = d; best = room; }
+    }
+    return best;
   }
 
   get currentRoom() { return this._currentRoom; }
@@ -551,6 +623,84 @@ export class WorldSystem {
     return this._rooms.length;
   }
 
+  /**
+   * CAN THE PLAYER ACTUALLY GET THERE?
+   *
+   * `node arpg/tools/probe.mjs --eval="ctx.peek('world').debugReach()"`
+   *
+   * The most valuable measurement in this subsystem, and the one whose absence
+   * cost the most: the previous level looked correct in every screenshot and in
+   * every stats() field while **five of its nine rooms were unreachable from the
+   * spawn** — the crypt corridor's floor had holes in it because a rotated room
+   * was given an axis-aligned slab, the crypt door's arch was 1.96 m to its
+   * lintel collider so no actor could path under it, and the hall and undercroft
+   * each built a solid flight of steps through the same three cubic metres.
+   * None of those is visible in a frame. All three are obvious here.
+   *
+   * Floods a grid over the level using the same two questions `ai` asks —
+   * is there ground, and is there 1.9 m of air above it — and reports how much
+   * of the walkable floor the spawn can reach. Dev only: it allocates and it
+   * costs a raycast per cell.
+   */
+  debugReach(cell = 1.0) {
+    const physics = this.ctx.peek('physics');
+    if (!physics?.groundAt) return { error: 'physics not registered' };
+    let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+    for (const r of this._rooms) {
+      minX = Math.min(minX, r.aabb.minX); maxX = Math.max(maxX, r.aabb.maxX);
+      minZ = Math.min(minZ, r.aabb.minZ); maxZ = Math.max(maxZ, r.aabb.maxZ);
+    }
+    const w = Math.ceil((maxX - minX) / cell), h = Math.ceil((maxZ - minZ) / cell);
+    const solid = new Uint8Array(w * h);
+    const perRoom = new Map();
+    let walkable = 0;
+    for (let iz = 0; iz < h; iz++) {
+      for (let ix = 0; ix < w; ix++) {
+        const i = iz * w + ix;
+        const x = minX + (ix + 0.5) * cell, z = minZ + (iz + 0.5) * cell;
+        const room = this.roomAt(x, z);
+        if (!room) { solid[i] = 1; continue; }
+        const g = physics.groundAt(x, z, 12);
+        if (!g) { solid[i] = 1; continue; }
+        const up = physics.raycastFrom?.(x, g.y + 0.25, z, 0, 1, 0, 1.9);
+        if (up?.hit) { solid[i] = 1; continue; }
+        walkable++;
+        perRoom.set(room.id, (perRoom.get(room.id) ?? 0) + 1);
+      }
+    }
+    // Four-connected flood from the spawn: an actor with a body radius cannot
+    // squeeze through a corner where two solids touch diagonally, so counting
+    // that as connected would report a level as reachable that is not.
+    const seen = new Uint8Array(w * h);
+    const q = new Int32Array(w * h);
+    let head = 0, tail = 0, reached = 0;
+    const sx = Math.floor((this.spawn.x - minX) / cell), sz = Math.floor((this.spawn.z - minZ) / cell);
+    const s0 = sz * w + sx;
+    if (sx >= 0 && sz >= 0 && sx < w && sz < h && !solid[s0]) { q[tail++] = s0; seen[s0] = 1; }
+    const hit = new Map();
+    while (head < tail) {
+      const i = q[head++]; reached++;
+      const ix = i % w, iz = (i / w) | 0;
+      const room = this.roomAt(minX + (ix + 0.5) * cell, minZ + (iz + 0.5) * cell);
+      if (room) hit.set(room.id, (hit.get(room.id) ?? 0) + 1);
+      if (ix > 0 && !solid[i - 1] && !seen[i - 1]) { seen[i - 1] = 1; q[tail++] = i - 1; }
+      if (ix < w - 1 && !solid[i + 1] && !seen[i + 1]) { seen[i + 1] = 1; q[tail++] = i + 1; }
+      if (iz > 0 && !solid[i - w] && !seen[i - w]) { seen[i - w] = 1; q[tail++] = i - w; }
+      if (iz < h - 1 && !solid[i + w] && !seen[i + w]) { seen[i + w] = 1; q[tail++] = i + w; }
+    }
+    const rooms = this._rooms.map((r) => ({
+      id: r.id, kind: r.kind, walk: perRoom.get(r.id) ?? 0, reach: hit.get(r.id) ?? 0,
+    }));
+    return {
+      grid: `${w}x${h}`, cell,
+      aabb: { minX: +minX.toFixed(1), maxX: +maxX.toFixed(1), minZ: +minZ.toFixed(1), maxZ: +maxZ.toFixed(1) },
+      spanX: +(maxX - minX).toFixed(1), spanZ: +(maxZ - minZ).toFixed(1),
+      walkable, reached, unreachable: walkable - reached,
+      sealedRooms: rooms.filter((r) => r.reach === 0).map((r) => r.id),
+      rooms,
+    };
+  }
+
   stats() {
     let tris = 0, meshes = 0, visible = 0;
     for (const r of this._rooms) {
@@ -567,7 +717,20 @@ export class WorldSystem {
       seed: `0x${(this.ctx.config.seed >>> 0).toString(16)}`,
       buildMs: +this._buildMs.toFixed(0),
       rooms: this._rooms.length,
+      roomKinds: this._rooms.reduce((m, r) => { m[r.kind] = (m[r.kind] ?? 0) + 1; return m; }, {}),
       roomsVisible: visible,
+      roomsDrawn: this._roomsDrawn,
+      streamCap: STREAM.maxRooms,
+      worldAabb: (() => {
+        let a = Infinity, b = -Infinity, c = Infinity, d = -Infinity;
+        for (const r of this._rooms) {
+          a = Math.min(a, r.aabb.minX); b = Math.max(b, r.aabb.maxX);
+          c = Math.min(c, r.aabb.minZ); d = Math.max(d, r.aabb.maxZ);
+        }
+        return { minX: +a.toFixed(1), maxX: +b.toFixed(1), minZ: +c.toFixed(1), maxZ: +d.toFixed(1),
+                 spanX: +(b - a).toFixed(1), spanZ: +(d - c).toFixed(1) };
+      })(),
+      links: this.level.links.length,
       meshes,
       triangles: Math.round(tris),
       colliders: this._colliderCount,

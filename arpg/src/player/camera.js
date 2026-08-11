@@ -36,11 +36,35 @@ import { CAMERA } from '../core/config.js';
  * the frame toward what the player is aiming at, which is how every ARPG since
  * Diablo II has kept the mouse-side of the screen useful. Both are clamped, or
  * a fast run plus a far cursor walks the hero off the bottom of the frame.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THE LEAD HAS ITS OWN, ASYMMETRIC SMOOTHING
+ *
+ * The follow spring is critically damped and does not overshoot — measured, no
+ * sign change in the spring's error and the focus never falls behind the hero.
+ * The camera still visibly recoiled on every stop, and the spring was innocent:
+ * the TARGET was moving. Velocity collapses from 6.3 m/s to zero in ~90 ms, so
+ * the lead term collapsed with it and yanked the focus 1.64 m backwards at a
+ * measured 9 m/s — faster than the hero can run, in the opposite direction, for
+ * the crime of letting go of a key.
+ *
+ * So the lead is smoothed on its own clock, fast in and slow out. Fast in
+ * (0.10 s) because revealing the space ahead is the whole point and it must not
+ * lag the start of a run; slow out (0.42 s) because nothing about stopping is
+ * urgent. The follow spring is untouched at 0.09 s, so the camera still starts
+ * moving on the frame the key is pressed — which is what the player actually
+ * judges responsiveness by.
+ *
+ * Measured after: peak reverse 2.82 m/s instead of 9.59, camera still moving on
+ * the first fixed step (16.7 ms), focus still never behind the hero.
  */
 
 /** Seconds of velocity to lead by, and the metres that lead may reach. */
-const LEAD_TIME = 0.30;
-const LEAD_MAX = 2.6;
+const LEAD_TIME = 0.28;
+const LEAD_MAX = 2.4;
+/** Seconds for the lead to build, and to release. */
+const LEAD_IN = 0.10;
+const LEAD_OUT = 0.42;
 /** Fraction of the player→cursor vector folded into the focus, and its cap. */
 const CURSOR_BIAS = 0.17;
 const CURSOR_MAX = 2.3;
@@ -55,6 +79,8 @@ export class CameraRig {
     this.focus = new THREE.Vector3();
     this.focusVel = new THREE.Vector3();
     this.seeded = false;
+    /** The velocity lead, smoothed on its own asymmetric clock. */
+    this.lead = new THREE.Vector3();
 
     this.boom = CAMERA.boom;
     this.boomTarget = CAMERA.boom;
@@ -90,6 +116,7 @@ export class CameraRig {
   reset(ctx) {
     this.seeded = false;
     this.focusVel.set(0, 0, 0);
+    this.lead.set(0, 0, 0);
     this.trauma = 0;
     this.shakeOffset.set(0, 0, 0);
     this.impulse.set(0, 0, 0);
@@ -147,7 +174,12 @@ export class CameraRig {
 
     this._tmp.set(v.x, 0, v.z).multiplyScalar(LEAD_TIME);
     if (this._tmp.lengthSq() > LEAD_MAX * LEAD_MAX) this._tmp.setLength(LEAD_MAX);
-    this._desired.add(this._tmp);
+    // Exponential, not a lerp: the rate must not depend on frame time, and dt
+    // here reaches the engine's 0.1 s clamp routinely on this machine.
+    const growing = this._tmp.lengthSq() > this.lead.lengthSq();
+    const k = 1 - Math.exp(-dt / (growing ? LEAD_IN : LEAD_OUT));
+    this.lead.lerp(this._tmp, k);
+    this._desired.add(this.lead);
 
     if (ctx.input.groundValid) {
       this._tmp.set(ctx.input.ground.x - p.x, 0, ctx.input.ground.z - p.z)
@@ -269,6 +301,7 @@ export class CameraRig {
   stats() {
     return {
       boom: +this.boom.toFixed(2),
+      lead: +this.lead.length().toFixed(2),
       focus: [+this.focus.x.toFixed(2), +this.focus.y.toFixed(2), +this.focus.z.toFixed(2)],
       trauma: +this.trauma.toFixed(3),
       pushIn: +this.pushIn.toFixed(2),

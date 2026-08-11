@@ -181,6 +181,20 @@ class Clip {
     this.rootMotion = def.rootMotion ? new ScalarTrack(def.rootMotion) : null;
     this.rootDistance = def.rootMotion ? def.rootMotion[def.rootMotion.length - 1][1] : 0;
 
+    /**
+     * When this clip has finished saying what it came to say — the time of its
+     * LAST event, which for every action clip is the hit, the release or the
+     * summon. Everything after it is follow-through.
+     *
+     * The player system ramps movement back in from here rather than at the end
+     * of the clip. Deriving it from the events instead of a per-clip constant
+     * means it cannot drift when a clip is retimed: move the `hit` key and the
+     * recovery window moves with it.
+     */
+    this.strikeEnd = this.events.length
+      ? this.events[this.events.length - 1].t
+      : def.duration * 0.5;
+
     this.rotBones = [];
     this.rotTracks = [];
     this.posBones = [];
@@ -267,6 +281,21 @@ export class Animator {
     this._rootPrev = 0;
     this.rootMotionOut = 0;
 
+    /**
+     * 0..1 — how much of the LOWER body the action layer has handed back to
+     * locomotion. Written by the player system while an action is recovering
+     * AND the hero is actually moving.
+     *
+     * Without it, giving movement back during a follow-through makes the hero
+     * skate: the action layer owns every bone, so the legs hold the attack's
+     * stance while the body translates. Releasing them to the run cycle as the
+     * recovery ramps in is what every action game does, and because it is scaled
+     * by real speed a stationary recovery still plays the authored full-body
+     * follow-through, unchanged.
+     */
+    this.actionRelease = 0;
+    this._maskRelease = new Float32Array(n);
+
     // ---- additive ----------------------------------------------------------
     this.hurtTime = 1e9;
     this.hurtWeight = 0;
@@ -316,6 +345,7 @@ export class Animator {
     this.actionFade = o.fade ?? 0.09;
     this.actionTarget = 1;
     this.actionMask = o.mask === 'upper' ? this.maskUpper : null;
+    this.actionRelease = 0;
     this._eventCursor = 0;
     this._rootPrev = 0;
     this.rootMotionOut = 0;
@@ -376,6 +406,9 @@ export class Animator {
       this.actionTarget = 1;
       this.actionMask = null;
       this.actionSpeed = 0;
+      // The shot harness must get the authored pose exactly. A stale leg
+      // release would silently re-pose the lower body of every action shot.
+      this.actionRelease = 0;
       this._eventCursor = clip.events.length;
       this.speed = 0;
       this._updateLocoWeights(0);
@@ -510,7 +543,7 @@ export class Animator {
     // 2. action layer.
     if (this.action && this.actionWeight > 0.001) {
       this._sample(this.action, Math.min(this.actionTime, this.action.duration), this._action);
-      this._blend(this.pose, this._loco, this._action, this.actionWeight, this.actionMask);
+      this._blend(this.pose, this._loco, this._action, this.actionWeight, this._resolveMask());
     } else {
       this._copy(this.pose, this._loco);
     }
@@ -533,6 +566,27 @@ export class Animator {
       this.billow = locoBillow;
       this.billowDir = 'back';
     }
+  }
+
+  /**
+   * The action layer's per-bone weight mask for this frame.
+   *
+   * Normally whatever `play()` asked for. While `actionRelease` is non-zero it
+   * is that mask interpolated toward the upper-body one, so the legs return to
+   * the run cycle without the arms losing the follow-through. Refills a
+   * preallocated array — nothing is allocated here.
+   */
+  _resolveMask() {
+    const r = this.actionRelease;
+    if (r <= 0.001) return this.actionMask;
+    const n = this.rig.count;
+    const base = this.actionMask, up = this.maskUpper, out = this._maskRelease;
+    for (let i = 0; i < n; i++) {
+      const b = base ? base[i] : 1;
+      const t = b < up[i] ? b : up[i];
+      out[i] = b + (t - b) * r;
+    }
+    return out;
   }
 
   /**

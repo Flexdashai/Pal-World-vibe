@@ -7,12 +7,31 @@ import { buildCharacter, PART_KEYS } from './character.js';
 import { buildAppearance } from './appearance.js';
 import { Animator } from './animator.js';
 import { SecondaryMotion } from './secondary.js';
-import { Locomotion, DASH } from './locomotion.js';
+import { Locomotion, DASH, DASH_BUFFER } from './locomotion.js';
 import { CameraRig } from './camera.js';
 import { Stats, xpForKill } from './stats.js';
 import { ShadowArmy } from './shadowarmy.js';
 import { MonarchAura } from './aura.js';
 import { DashTrail } from './trail.js';
+
+/**
+ * Movement returns after an action clip's LAST EVENT — its hit, release or
+ * summon — over `RECOVERY_RAMP` seconds, up to `RECOVERY_SPEED` of top speed.
+ * Full speed comes back when the clip does. See `_moveAuthority`.
+ */
+const RECOVERY_DELAY = 0.05;
+const RECOVERY_RAMP = 0.20;
+const RECOVERY_SPEED = 0.62;
+
+/**
+ * Keys that play the generic cast clip. Module scope, not a literal inside
+ * `_readActionInput`: that runs once per frame and an array literal there is a
+ * per-frame allocation, which the contract forbids.
+ *
+ * `skill1` is deliberately absent — it is the primary attack and is read with
+ * the mouse button, see `_readActionInput`.
+ */
+const CAST_KEYS = ['skill2', 'skill3', 'skill4', 'skillQ', 'skillE'];
 
 /**
  * MONARCH — the player subsystem.
@@ -201,6 +220,9 @@ export class PlayerSystem {
      *  cleared in `endFrame`. Without this guard one keypress fires up to five
      *  attacks — which on a machine where a frame costs seconds is EVERY frame. */
     this._actionFrame = -1;
+    /** Elapsed time of a dash press that has not been honoured yet, or -1.
+     *  See `_serviceDash`. */
+    this._dashPressAt = -1;
     this._ultBurst = { position: this.position, radius: 6.5, element: 'shadow', magnitude: 1.4 };
 
     // Seed the pose so the very first rendered frame shows a posed character
@@ -286,6 +308,7 @@ export class PlayerSystem {
       // hero, instead of sweeping the camera across the level to catch up.
       this.cameraRig.reset(this.ctx);
       this.locomotion.clearMoveTarget();
+      this._dashPressAt = -1;
       if (this.controlEnabled) {
         this._debugPosed = false;
         this.anim.frozen = false;
@@ -487,19 +510,36 @@ export class PlayerSystem {
       this._readActionInput(ctx);
     }
 
-    // Movement is gated during a committed action (an attack, a cast, ARISE),
-    // which is what gives those animations weight. A dash is movement, so it
-    // is exempt.
-    const committed = (this.anim.actionActive && !this.locomotion.dashing) ||
-      ctx.time.elapsed < this._staggerUntil;
-    this.locomotion.moveEnabled = !committed;
-    this.locomotion.readInput(ctx);
+    const auth = this._moveAuthority(ctx);
+    this.locomotion.moveAuthority = auth;
     this.locomotion.speedMul = this.stats.moveSpeedMul;
+    this.locomotion.readInput(ctx);
+    // Hand the LEGS back to the locomotion layer as recovery movement is both
+    // permitted AND asked for, or a recovery-cancelled attack skates across the
+    // floor in its follow-through pose.
+    //
+    // Gated on INTENT, not on speed. Gating on speed released the legs 38% (the
+    // measured number) during a stationary attack, because the clip's own
+    // authored lunge moves the hero 0.7 m and that counts as speed. A player who
+    // is not steering must get the authored full-body follow-through, unchanged.
+    if (!this.anim.frozen) {
+      const w = this.locomotion.wish;
+      const intent = Math.min(1, Math.hypot(w.x, w.z) / Math.max(1e-3, this.locomotion.maxSpeed));
+      this.anim.actionRelease = Math.min(1, auth / RECOVERY_SPEED) * intent;
+    }
+    // AFTER readInput, so a dash pressed on the same frame as a direction goes
+    // in the direction being held rather than at the cursor.
+    this._serviceDash(ctx);
     // Root motion from an attack: attacks lunge forward, and running that
     // displacement through the character controller is what makes a lunge stop
-    // at a wall instead of sliding the hero into it.
+    // at a wall instead of sliding the hero into it. The dash clip is excluded —
+    // `locomotion` owns the dash's distance curve directly, and combat's Umbral
+    // Step plays the same clip while moving the hero with `pushBy`, so leaving
+    // it in applied that skill's travel twice.
+    const act = this.anim.action;
     this.locomotion.rootAdvance =
-      (committed && !this.locomotion.dashing) ? this.anim.rootMotionOut : 0;
+      (this.anim.actionActive && !this.locomotion.dashing && act?.name !== 'dash')
+        ? this.anim.rootMotionOut : 0;
     this.locomotion.step(h, ctx, this.anim);
 
     this.stats.regen(h);
@@ -507,19 +547,72 @@ export class PlayerSystem {
     this._publish(ctx);
   }
 
+  /**
+   * How much of their own movement the player is allowed this step, 0..1.
+   *
+   * MEASURED BEFORE THIS EXISTED: one attack rooted the hero for 667 ms and one
+   * cast for 1167 ms, because the gate was `anim.actionActive` — true for the
+   * whole clip AND its fade-out. Half of "combat feels sticky" was here rather
+   * than in `combat`, which had already made a skill's recovery cancellable.
+   *
+   * The rule: the hero is committed until the clip's last event — the hit, the
+   * release, the summon — and then gets movement back over `RECOVERY_RAMP`
+   * seconds, up to `RECOVERY_SPEED` of top speed. Full speed returns when the
+   * clip does. The strike keeps all of its weight; the follow-through is no
+   * longer a lockout.
+   */
+  _moveAuthority(ctx) {
+    if (ctx.time.elapsed < this._staggerUntil) return 0;
+    const anim = this.anim;
+    if (!anim.actionActive || this.locomotion.dashing) return 1;
+    const act = anim.action;
+    // The dash clip's movement window belongs to `locomotion`, which has already
+    // ended it — the remaining frames are a landing, not a commitment.
+    if (act?.name === 'dash') return 1;
+
+    let auth = RECOVERY_SPEED *
+      clamp01((anim.actionTime - (act?.strikeEnd ?? 0) - RECOVERY_DELAY) / RECOVERY_RAMP);
+    // A held clip being released (ARISE, the ultimate) hands control back as the
+    // body blends out of it, not after the blend has finished.
+    if (anim.actionTarget === 0) auth = Math.max(auth, 1 - anim.actionWeight);
+    return auth;
+  }
+
+  /**
+   * Start a dash if one is owed.
+   *
+   * Runs every fixed step, not once per frame, because the thing it is waiting
+   * for — the cooldown — expires on a fixed step. A press is remembered for
+   * `DASH_BUFFER` and fires the instant it becomes legal: pressing dash 40 ms
+   * before the cooldown ends used to be silently discarded, which is the same
+   * class of defect combat found in its own skill queue.
+   *
+   * There is no longer an `actionActive` guard. A dodge that cannot interrupt
+   * the animation the player is trying to escape is the single most frustrating
+   * thing an ARPG can do, and `combat` already exempts the dash from every one
+   * of its own locks.
+   */
+  _serviceDash(ctx) {
+    if (this._dashPressAt < 0) return;
+    if (ctx.time.elapsed - this._dashPressAt > DASH_BUFFER) { this._dashPressAt = -1; return; }
+    if (!this.alive || this.anim.frozen || !this.locomotion.canDash()) return;
+    if (!this.locomotion.startDash(ctx, this.anim)) return;
+
+    this._dashPressAt = -1;
+    this.anim.play('dash', { fade: 0.05, restart: true });
+    this._chestPoint(this._v);
+    this.trail.setEmitting(true, this._v);
+    this.cameraRig.addImpulse(this.locomotion.dashDir, 0.10);
+    this._cue('dash.whoosh', 0.9);
+  }
+
   /** Skills, attacks, dash and the two signature buttons. */
   _readActionInput(ctx) {
     const input = ctx.input;
 
-    if (input.pressed('dash') && this.locomotion.canDash() && !this.anim.actionActive) {
-      if (this.locomotion.startDash(ctx)) {
-        this.anim.play('dash', { fade: 0.05, restart: true });
-        this._chestPoint(this._v);
-        this.trail.setEmitting(true, this._v);
-        this.cameraRig.addImpulse(this.locomotion.dashDir, 0.10);
-        this._cue('dash.whoosh', 0.9);
-      }
-    }
+    // Latch only — `_serviceDash` decides when it may fire.
+    if (input.pressed('dash')) this._dashPressAt = ctx.time.elapsed;
+
     if (this.locomotion.dashing) {
       this._chestPoint(this._v);
       if (!this.trail.emitting) this.trail.setEmitting(true, this._v);
@@ -531,7 +624,17 @@ export class PlayerSystem {
     // Primary attack. Auto-chains while held, advancing when the previous swing
     // is 68% done — the window in which a combo feels responsive rather than
     // either sticky or interruptible into nonsense.
-    if (input.mouse(0) && !this.locomotion.dashing) {
+    //
+    // `1` IS A SECOND BINDING FOR THE SAME THING, not a skill of its own.
+    // `ui`'s skill bar labels slot 0 with the key "1", `combat` binds the
+    // primary attack to the mouse and explicitly skips `skill1` in its keyboard
+    // loop, and `player` used to answer the key by playing the generic cast
+    // clip. MEASURED: pressing `1` cast nothing (`exec.counters.casts` did not
+    // move) and rooted the hero for 550 ms, against 117 ms for the same skill on
+    // the mouse — because the generic cast clip's strikeEnd is 0.50 s and
+    // `attack1`'s is 0.19 s. Three subsystems, three different opinions about
+    // one key.
+    if ((input.mouse(0) || input.down('skill1')) && !this.locomotion.dashing) {
       const busy = this.anim.actionActive && this.anim.actionPhase < 0.68;
       if (!busy) {
         if (input.groundValid) {
@@ -549,11 +652,25 @@ export class PlayerSystem {
     // is not doing anything yet the animation still needs to fire, and
     // `Animator.play` is idempotent for an already-playing clip so the two
     // paths cannot double-trigger.
-    for (const k of ['skill1', 'skill2', 'skill3', 'skill4', 'skillQ', 'skillE']) {
-      if (input.pressed(k)) {
-        this.playAction('cast', { fade: 0.07 });
-        this._faceCursor(ctx);
-      }
+    //
+    // `skill1` is not in the list — it is the primary attack, handled above.
+    //
+    // AND A PRESS `combat` IS GOING TO REFUSE MUST NOT PLAY THE CLIP EITHER.
+    // The clip commits the body for its whole strike window and `_moveAuthority`
+    // is 0 until then, so a nova pressed while it was on cooldown rooted the
+    // hero for 550 ms and did nothing whatsoever — the worst possible answer to
+    // a mistimed press. `combat` is asked with the same query it will run on
+    // itself one system later in the same fixed step, so the two cannot
+    // disagree, and every accepted cast is animated by the `player:cast`
+    // handler above regardless. With no `combat` registered the clip still
+    // plays, exactly as before.
+    const combat = ctx.peek('combat');
+    for (let i = 0; i < CAST_KEYS.length; i++) {
+      const k = CAST_KEYS[i];
+      if (!input.pressed(k)) continue;
+      if (combat?.exec && !combat.exec.canCast(k, this)) continue;
+      this.playAction('cast', { fade: 0.07 });
+      this._faceCursor(ctx);
     }
 
     if (input.pressed('arise')) this.triggerArise();
@@ -887,6 +1004,7 @@ export class PlayerSystem {
   }
 
   dispose() {
+    this._dashPressAt = -1;
     for (const off of this._offs) off?.();
     this._offs.length = 0;
 
@@ -906,3 +1024,5 @@ export class PlayerSystem {
     this.root?.removeFromParent();
   }
 }
+
+function clamp01(v) { return v < 0 ? 0 : v > 1 ? 1 : v; }

@@ -32,34 +32,62 @@ import { CAMERA } from '../core/config.js';
  * ---------------------------------------------------------------------------
  * ACCELERATION, AND WHY IT IS ASYMMETRIC
  *
- * `ACCEL` is 46 m/s² and `DECEL` is 62. Getting to full speed takes ~135 ms;
- * stopping takes ~100. A hero who accelerates as slowly as they decelerate feels
+ * `ACCEL` is 56 m/s² and `DECEL` is 70. Getting to full speed takes ~113 ms;
+ * stopping takes ~90. A hero who accelerates as slowly as they decelerate feels
  * sluggish, and one who does both instantly feels weightless and makes the run
  * animation's foot-plant impossible to sell.
+ *
+ * `ACCEL_TURN` is the third number and the one that was missing. Straight-line
+ * acceleration and CHANGING DIRECTION are different sensations and a single rate
+ * cannot serve both: at 46 m/s² a 90° turn at top speed took 200 ms to come back
+ * up to full speed in the new direction (measured), which reads as input lag even
+ * though the input was sampled on the frame it arrived. Turning is therefore
+ * accelerated at up to 150 m/s², interpolated by how far the wish is from the
+ * current velocity, which brings a 90° turn to ~100 ms and a full reversal to
+ * ~110 while leaving the from-standstill ramp exactly as authored.
  */
 
 const D = Math.PI / 180;
 
 /** Metres per second at rest, before stat scaling. */
 export const BASE_SPEED = 6.15;
-const ACCEL = 46;
-const DECEL = 62;
-/** Radians/s. 15 is roughly a 90° turn in 100 ms — snappy, but the shoulders
- *  still visibly swing round rather than teleporting. */
-const TURN_RATE = 15.0;
-const TURN_RATE_STANDING = 9.0;
+const ACCEL = 56;
+const ACCEL_TURN = 150;
+const DECEL = 70;
+/** Radians/s. 22 is roughly a 90° turn in 70 ms — the shoulders still visibly
+ *  swing round rather than teleporting, but the hero is aiming where the player
+ *  asked within four frames. */
+const TURN_RATE = 22.0;
+const TURN_RATE_STANDING = 13.0;
 
-/** Dash. `IFRAME` is a WINDOW inside the clip, not the whole clip: the hero is
- *  vulnerable during the 50 ms wind-up and again once they have landed, which is
- *  what makes dash timing a skill rather than a panic button. */
+/**
+ * Dash.
+ *
+ * `moveTime` is SHORTER than the clip: the hero covers ground for 0.30 s and
+ * then spends the remaining 0.20 s landing, with movement control already back.
+ * Owning those last twelve frames bought nothing — the dash was travelling at
+ * 1.8 m/s through them — and cost the player a fifth of a second of being unable
+ * to do anything, which is exactly the stickiness this pass exists to remove.
+ *
+ * The i-frames now open on the FIRST simulated step rather than 45 ms in. There
+ * used to be a wind-up to be vulnerable during; there no longer is one, and a
+ * dodge that does not dodge for its first three frames is a dodge the player
+ * cannot time.
+ */
 export const DASH = {
   cooldown: 0.85,
-  iframeStart: 0.045,
+  iframeStart: 0,
   iframeEnd: 0.30,
+  /** Seconds of travel. The clip runs to 0.50; movement stops here. */
+  moveTime: 0.30,
   /** Metres. The clip's root-motion curve is normalised to this. */
-  distance: 4.0,
+  distance: 4.6,
   cost: 0,
 };
+
+/** Seconds a refused dash press stays live, waiting for the cooldown to end.
+ *  Owned here so `player` and any future gamepad layer share one window. */
+export const DASH_BUFFER = 0.22;
 
 /** Distance at which a click-to-move goal counts as reached. Below ~0.2 the
  *  hero oscillates on the spot because one fixed step overshoots it. */
@@ -71,6 +99,18 @@ export class Locomotion {
 
     this.speedMul = 1;
     this.moveEnabled = true;
+    /**
+     * 0..1 scale on the player's own movement intent, written every fixed step
+     * by the player system.
+     *
+     * A boolean was not enough. Movement used to be all-or-nothing for the whole
+     * length of an action clip — measured at 667 ms of being rooted for one
+     * attack and 1167 ms for one cast — because the only thing the gate could
+     * say was "no". A scalar lets the tail of an animation hand control back
+     * gradually: the strike still commits the hero, the follow-through no longer
+     * does.
+     */
+    this.moveAuthority = 1;
 
     /** World-space desired velocity, before acceleration. */
     this.wish = new THREE.Vector3();
@@ -93,6 +133,15 @@ export class Locomotion {
     this.dashDir = new THREE.Vector3(0, 0, 1);
     this.dashing = false;
     this.invulnerable = false;
+    /** The dash's authored distance curve, taken from the clip at start time.
+     *  Sampled on OUR clock rather than read back from the animator: the
+     *  animator advances in `update()`, after the fixed step that starts the
+     *  dash, so reading `rootMotionOut` meant the first step of every dash moved
+     *  the hero exactly zero metres. One frame of nothing at the front of a
+     *  dodge is the most expensive frame in the game. */
+    this._dashCurve = null;
+    this._dashScale = 1;
+    this._dashPrev = 0;
 
     /** Smoothed planar speed, what the animator blends on. */
     this.speed = 0;
@@ -248,8 +297,15 @@ export class Locomotion {
    * Begin a dash. Direction priority: current movement intent, then the
    * cursor, then current facing — in that order because a player holding a
    * direction means it, and a player standing still is aiming with the mouse.
+   *
+   * MUST be called after `readInput` for the same step. Called before it, `wish`
+   * still holds the PREVIOUS step's intent, so pressing a direction and dash on
+   * the same frame from a standstill dashed at the cursor instead of at the key
+   * the player was holding.
+   *
+   * @param {object} anim  the animator, for the dash clip's distance curve
    */
-  startDash(ctx) {
+  startDash(ctx, anim) {
     if (!this.canDash()) return false;
     if (this.wish.lengthSq() > 0.04) {
       this.dashDir.copy(this.wish).setY(0).normalize();
@@ -264,9 +320,16 @@ export class Locomotion {
     this.dashCooldown = DASH.cooldown;
     this.dashing = true;
     this.hasMoveTarget = false;
+
+    const clip = anim?.clips?.dash ?? null;
+    this._dashCurve = clip?.rootMotion ?? null;
+    this._dashScale = clip?.rootDistance > 1e-6 ? DASH.distance / clip.rootDistance : 1;
+    this._dashPrev = 0;
+
     this.yawTarget = Math.atan2(this.dashDir.x, this.dashDir.z);
     // Snap the facing: a dash that starts by pirouetting looks broken, and the
-    // i-frames begin 45 ms in, so there is no time to turn smoothly.
+    // hero is already a quarter of a metre down-range on the first step, so
+    // there is no time to turn smoothly even if we wanted to.
     this.yaw = this.yawTarget;
     return true;
   }
@@ -294,32 +357,54 @@ export class Locomotion {
       const phase = this.dashTime;
       this.invulnerable = phase >= DASH.iframeStart && phase <= DASH.iframeEnd;
 
-      // Root motion drives the dash: the clip says how far along the move is,
-      // and that distance goes through the character controller so a dash into
-      // a wall stops at the wall instead of tunnelling through it.
-      const advance = (anim?.rootMotionOut ?? 0) * (DASH.distance / 4.0);
+      // The clip's authored distance curve says how far along the move is, and
+      // that distance goes through the character controller so a dash into a
+      // wall stops at the wall instead of tunnelling through it. Sampled at OUR
+      // clock, which is one fixed step ahead of the animator's.
+      const t = Math.min(phase, DASH.moveTime);
+      const travelled = this._dashCurve
+        ? this._dashCurve.sample(t) * this._dashScale
+        : DASH.distance * (1 - Math.pow(1 - t / DASH.moveTime, 2.2));
+      const advance = Math.max(0, travelled - this._dashPrev);
+      this._dashPrev = travelled;
       const speed = h > 1e-6 ? advance / h : 0;
       vel.x = this.dashDir.x * speed;
       vel.z = this.dashDir.z * speed;
 
-      if (this.dashTime >= 0.5) {
+      if (this.dashTime >= DASH.moveTime) {
         this.dashing = false;
         this.invulnerable = false;
         // Hand over to normal movement with the dash's exit speed intact, so
-        // dash-into-run is continuous instead of a full stop.
+        // dash-into-run is continuous instead of a full stop. The curve is shaped
+        // to arrive at roughly running pace, so there is nothing to smooth over.
         const exit = Math.min(this.maxSpeed, speed);
         vel.x = this.dashDir.x * exit;
         vel.z = this.dashDir.z * exit;
       }
     } else {
       this.invulnerable = false;
-      const wx = this.moveEnabled ? this.wish.x : 0;
-      const wz = this.moveEnabled ? this.wish.z : 0;
+      const auth = this.moveEnabled ? clamp(this.moveAuthority, 0, 1) : 0;
+      const wx = this.wish.x * auth;
+      const wz = this.wish.z * auth;
       const wanted = Math.hypot(wx, wz);
-      const rate = wanted > 0.01 ? ACCEL : DECEL;
+
       const dx = wx - vel.x, dz = wz - vel.z;
       const dl = Math.hypot(dx, dz);
       if (dl > 1e-5) {
+        // Turning is not accelerating. `turn` is 0 when the wish points along
+        // the current velocity and 1 when it opposes it, scaled by how much
+        // speed there actually is to redirect — from a standstill there is no
+        // direction to change and the authored ramp is what the player feels.
+        let rate = DECEL;
+        if (wanted > 0.01) {
+          const vl = Math.hypot(vel.x, vel.z);
+          let turn = 0;
+          if (vl > 0.35) {
+            const align = (vel.x * wx + vel.z * wz) / (vl * wanted);
+            turn = (1 - align) * 0.5 * Math.min(1, vl / Math.max(1e-3, this.maxSpeed));
+          }
+          rate = ACCEL + (ACCEL_TURN - ACCEL) * turn;
+        }
         const step = Math.min(dl, rate * h);
         vel.x += (dx / dl) * step;
         vel.z += (dz / dl) * step;
@@ -332,10 +417,16 @@ export class Locomotion {
       // lunge took effect a step late, and the deceleration term then ate most
       // of it on the way back. An attack's forward travel is authored in the
       // clip and nothing else should be arguing with it.
+      //
+      // It is now crossfaded by movement authority instead of switched, because
+      // authority is no longer a boolean: while the hero is committed (auth 0)
+      // the lunge is absolute, and by the time the tail has handed control back
+      // (auth 1) the curve is flat and has nothing left to say anyway.
       if (this.rootAdvance > 1e-6) {
         const speed = this.rootAdvance / h;
-        vel.x = Math.sin(this.yaw) * speed;
-        vel.z = Math.cos(this.yaw) * speed;
+        const k = 1 - auth;
+        vel.x = Math.sin(this.yaw) * speed * k + vel.x * auth;
+        vel.z = Math.cos(this.yaw) * speed * k + vel.z * auth;
       }
     }
     this.rootAdvance = 0;
@@ -382,6 +473,7 @@ export class Locomotion {
     return {
       speed: +this.speed.toFixed(2),
       yaw: +(this.yaw * 180 / Math.PI).toFixed(1),
+      authority: +this.moveAuthority.toFixed(2),
       dashing: this.dashing,
       iframes: this.invulnerable,
       cooldown: +this.dashCooldown.toFixed(2),

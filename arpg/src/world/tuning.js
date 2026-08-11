@@ -66,6 +66,13 @@ export const ARCH = {
   cryptCamSide: 1.45,
   arenaBackdrop: 13.0,
   arenaCamSide: 2.6,
+  /** The open-air ranges: a cloister walk and a roofless nave are enclosed by
+   *  arcades and ruined elevations rather than by full-height walls, so their
+   *  backdrop is deliberately lower than the cathedral's. */
+  cloisterBackdrop: 7.2,
+  cloisterCamSide: 1.9,
+  naveBackdrop: 9.6,
+  naveCamSide: 1.8,
 
   /** Plinth / string course heights. A wall with no horizontal break in it is
    *  the flattest thing a level can contain. */
@@ -112,7 +119,7 @@ export const ARCH = {
  * Getting a key wrong is SILENT — `materialsFor` falls back to `chamber` — and
  * it cost a full capture cycle: the cathedral was keyed 'hall' while its kind is
  * 'cathedral', so the hall spent three iterations wearing a sealed crypt's
- * dressing. The nine kinds are listed below and there are no others.
+ * dressing. The fifteen kinds are listed below and there are no others.
  *
  * ---------------------------------------------------------------------------
  * `env` AND WHY IT IS NOT THE FILL LEVER, MEASURED
@@ -143,6 +150,24 @@ export const DRESS = {
   undercroft: { env: 1.5, wet: 0.86, moss: 0.30, grime: 0.62, soot: 0.06, dust: 0.02 },
   shrine: { env: 1.6, wet: 0.40, moss: 0.11, grime: 0.42, soot: 0.10, dust: 0.05 },
   passage: { env: 1.0, wet: 0.45, moss: 0.18, grime: 0.62, soot: 0.20, dust: 0.05 },
+
+  // ---- the outer precinct ------------------------------------------------
+  // The three rooms with sky over them are the WETTEST and the MOSSIEST in the
+  // level, which is the whole reason to have them: an interior gets damp from
+  // groundwater and reads uniformly grimy, an exterior gets rained on and grows
+  // things, so moss climbs the north faces and the stone bleaches. That
+  // difference is what stops fifteen rooms of one granite recipe reading as one
+  // room repeated.
+  cloister: { env: 3.0, wet: 0.52, moss: 0.44, grime: 0.40, soot: 0.03, dust: 0.02 },
+  nave: { env: 2.9, wet: 0.46, moss: 0.38, grime: 0.48, soot: 0.05, dust: 0.04 },
+  bridge: { env: 2.8, wet: 0.58, moss: 0.26, grime: 0.52, soot: 0.08, dust: 0.02 },
+  // Covered but open on one side: half an exterior.
+  gallery: { env: 2.0, wet: 0.34, moss: 0.20, grime: 0.50, soot: 0.14, dust: 0.06 },
+  // Sealed, dry, and the only room in the level that was ever CLEAN. Low grime
+  // and low wet is the point: it should read as tended, so the gold and the wax
+  // have somewhere to sit.
+  reliquary: { env: 1.8, wet: 0.16, moss: 0.02, grime: 0.26, soot: 0.16, dust: 0.16 },
+  catacomb: { env: 1.0, wet: 0.30, moss: 0.08, grime: 0.60, soot: 0.10, dust: 0.20 },
 };
 
 /**
@@ -213,6 +238,19 @@ export const AMBIENT = {
     undercroft: 0.74,
     shrine: 0.80,
     passage: 0.52,
+    // Open to the sky: these get the most fill in the level, because the sky IS
+    // their fill and a moonlit courtyard is not a crypt.
+    cloister: 1.45,
+    nave: 1.40,
+    bridge: 1.35,
+    gallery: 1.00,
+    // The reliquary is the one TENDED room in the level and the only interior
+    // that should read as brighter than the crypt it sits behind; the catacomb
+    // is the deepest, but measured at 0.54 its aisles came back as information
+    // -free black rather than as dark, which is the failure the whole AMBIENT
+    // section exists to avoid.
+    reliquary: 0.95,
+    catacomb: 0.64,
   },
   /** Seconds for the fill to cross-fade when the player changes room. Slow, on
    *  purpose: it is standing in for an eye adapting, and a step change reads as
@@ -288,14 +326,31 @@ export const LIGHTING = {
  * processional way stays lit while the player is at either end of it.
  */
 export const STREAM = {
-  drawRadius: 34.0,
+  drawRadius: 30.0,
   /** Hysteresis: a room already drawn stays drawn until this much further out.
    *  Without it a player pacing on the boundary toggles a room's visibility
    *  every frame, and every toggle is a shadow-map invalidation. */
-  hysteresis: 7.0,
+  hysteresis: 6.0,
   /** Rooms are never streamed out while the shot harness is posing the camera —
    *  a debug focus may legitimately sit outside every room. */
   alwaysDraw: 1,
+  /**
+   * HARD CAP on rooms drawn at once, whatever the radius says.
+   *
+   * A radius alone does not bound the cost, and that is not a theoretical
+   * worry — it was measured. On the nine-room level the radius drew SEVEN of
+   * nine rooms from the spawn, i.e. it was culling almost nothing; the level
+   * was simply smaller than the radius. Growing the level to seventeen rooms
+   * without a cap means the same radius sitting in the middle of a junction can
+   * pull in eight or nine, and the frame cost is then a property of where the
+   * player happens to stand rather than a budget.
+   *
+   * The cap is applied by AABB distance, nearest first, so the room the player
+   * is standing in and its immediate neighbours always survive. Six is derived:
+   * the worst junction in this level (the gallery) touches four rooms, plus the
+   * one being entered, plus one for hysteresis.
+   */
+  maxRooms: 6,
 };
 
 /**

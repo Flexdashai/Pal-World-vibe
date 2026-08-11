@@ -47,6 +47,7 @@ import { XpBar, TargetBar, BossBar, ShadowRoster, bakeBarFrames } from './bars.j
 import { SystemStack, WINDOWS } from './system.js';
 import { KillFeed, ToastStrip } from './feed.js';
 import { MiniMap } from './minimap.js';
+import { WorldMap } from './worldmap.js';
 import { Panels } from './panels.js';
 import { ScreenFx } from './screenfx.js';
 import { DamageNumbers } from './damagenumbers.js';
@@ -94,6 +95,10 @@ export class UiSystem {
     this.target = new TargetBar(this.top);
 
     this.map = new MiniMap(this.root, this.artRng.fork());
+    // The full-screen map draws the dial's own state at screen size; it never
+    // keeps a second copy of the fog or the room list.
+    this.wmap = new WorldMap(this.root);
+    this.wmap.attach(this.map);
     this.roster = new ShadowRoster(this.root);
     this.feed = new KillFeed(this.root);
     this.toasts = new ToastStrip(this.root);
@@ -138,6 +143,15 @@ export class UiSystem {
     this._bossId = null;
     this._hasWorldMap = false;
     this._exploreAccum = 0;
+    this._exploreX = 1e9;
+    this._exploreZ = 1e9;
+    this._worldPoll = 0;
+    /** How the level was picked up, and how many `world:ready` events actually
+     *  reached this subsystem. Reported by `stats()` — if a level is adopted
+     *  while `worldReadyEvents` is 0, the event fired before the listener
+     *  existed and the map would have shown synthetic data forever. */
+    this._adoptedVia = null;
+    this._worldReadyEvents = 0;
     this._sizeW = 1280;
     this._sizeH = 720;
 
@@ -241,20 +255,72 @@ export class UiSystem {
       this.feed.push('shadow', name, 'has arisen', 0);
     });
 
-    on('world:ready', (e) => {
-      this._hasWorldMap = true;
-      this.map.reset();
-      if (Array.isArray(e?.rooms)) this.map.setRooms(e.rooms);
-      this.map.setLabel(`B${e?.level ?? 1}`, 'The Sunken Nave');
-    });
+    on('world:ready', (e) => { this._worldReadyEvents++; this._adoptLevel(e, 'event'); });
 
     on('world:room', (e) => {
       if (e?.cleared && e?.room) this.map.markRoomCleared(e.room);
     });
 
+    // ---- the level we already missed ---------------------------------------
+    // `world:ready` is emitted at the end of `world.init()`. `ui` has no deps,
+    // so the registry's topological sort puts it AFTER world — the event has
+    // already fired by the time the listener above exists, and it never fires
+    // again. Measured before this line existed: `_hasWorldMap === false` for the
+    // whole session, `markExplored` never ran once, and the dial spent every
+    // frame of every playthrough showing `fakedata.makeDungeonField`'s synthetic
+    // corridors under a player arrow standing in a completely different, real
+    // dungeon. Nothing about that is visible in a screenshot — the fake map is
+    // convincing — and it is the single largest part of "the map does not follow
+    // the character".
+    //
+    // The listener stays: this is a late-adopt, not a replacement for it.
+    this._pollWorld(ctx);
+
     // ---- initial layout ----------------------------------------------------
     this.resize(ctx.canvas.clientWidth || 1280, ctx.canvas.clientHeight || 720, ctx);
     this.debugState('clean');
+  }
+
+  /**
+   * Adopt a level, from the `world:ready` payload or from the live subsystem.
+   * Duck-typed on both paths, because the two carry the same data in the same
+   * shape and neither is guaranteed to exist.
+   */
+  _adoptLevel(e, via) {
+    const rooms = e?.rooms;
+    if (!Array.isArray(rooms) || rooms.length === 0) return false;
+    this._hasWorldMap = true;
+    this._adoptedVia = via;
+    this.map.reset();
+    // setRooms BEFORE anything paints: it is what re-sizes and re-centres the
+    // fog raster on the level, and a re-size clears the raster.
+    this.map.setRooms(rooms);
+    this.wmap.setLinks(e?.links ?? null);
+    // The level's own name, not a hardcoded one — `world` publishes it and the
+    // two had already drifted apart ("The Sunken Nave" against "The Sunken
+    // Cathedral"), which reads as a bug the moment a player opens the map.
+    const floor = `B${e?.level ?? 1}`;
+    const name = e?.name ?? 'The Sunken Nave';
+    this.map.setLabel(floor, name);
+    this.wmap.setLabel(floor, name);
+    // Reveal where the player is standing immediately, so the map is never a
+    // black disc on the first frame of a run.
+    this.map.markExplored(this._playerPos.x, this._playerPos.z, 12);
+    return true;
+  }
+
+  /** One attempt at reading a world that initialised before this subsystem. */
+  _pollWorld(ctx) {
+    if (this._hasWorldMap) return true;
+    const w = ctx.peek('world');
+    const level = w?.level;
+    if (!level) return false;
+    return this._adoptLevel({
+      rooms: level.rooms,
+      links: level.links,
+      level: w._ready?.level ?? 1,
+      name: w._ready?.name ?? level.name,
+    }, 'poll');
   }
 
   // =========================================================================
@@ -275,6 +341,9 @@ export class UiSystem {
     const bucket = Math.ceil(w / 160) * 160;
     const key = `${Math.round(m.u * 200)}|${bucket}`;
     this._syncRenderResolution();
+    // The full map is the one widget sized to the EXACT viewport rather than to
+    // a bucket, so it is re-baked before the bucketed early-out.
+    this.wmap.bake(m.u, w, h);
     if (key === this._bakeKey) { this._layoutTop(); return; }
     this._bakeKey = key;
 
@@ -529,14 +598,29 @@ export class UiSystem {
     this.cursor.update(rdt, ctx, this._sizeW, this._sizeH);
 
     // ---- minimap -----------------------------------------------------------
+    // A world that is built lazily, or rebuilt for a new floor, still has to be
+    // picked up even though its event fired before this subsystem existed.
+    if (!this._hasWorldMap) {
+      this._worldPoll += rdt;
+      if (this._worldPoll > 0.5) { this._worldPoll = 0; this._pollWorld(ctx); }
+    }
     this.map.setPlayer(this._playerPos.x, this._playerPos.z, this._playerFacing);
     if (!this._posed) this._syncBlips(rdt);
+    // The reveal is throttled but the THRESHOLD is distance-based as well as
+    // time-based, so a running player cannot outpace it: at 6 m/s the 0.2 s
+    // timer already only lets them travel 1.2 m into a 10 m disc, and the
+    // distance gate covers a dash or a knockback that moves further than that
+    // inside one tick.
     this._exploreAccum += rdt;
-    if (this._hasWorldMap && this._exploreAccum > 0.20) {
+    const moved = Math.hypot(this._playerPos.x - this._exploreX, this._playerPos.z - this._exploreZ);
+    if (this._hasWorldMap && (this._exploreAccum > 0.20 || moved > 3.0)) {
       this._exploreAccum = 0;
+      this._exploreX = this._playerPos.x;
+      this._exploreZ = this._playerPos.z;
       this.map.markExplored(this._playerPos.x, this._playerPos.z, 10);
     }
     this.map.update(rdt, this._u);
+    this.wmap.update(rdt);
 
     this._handleInput(ctx);
   }
@@ -588,12 +672,25 @@ export class UiSystem {
     if (i.pressed('inventory')) this.panels.toggle('inventory');
     if (i.pressed('character')) this.panels.toggle('character');
     if (i.pressed('map')) {
-      // Cycle the minimap through three zoom levels rather than opening a
-      // second full map: an isometric dungeon crawler is read at one scale.
-      this.map.zoom = this.map.zoom > 3.4 ? 1.7 : this.map.zoom > 2.2 ? 3.9 : 2.55;
-      this.map._dirty = true;
+      // M opens the full-screen map. SHIFT+M cycles zoom — of the full map when
+      // it is open, of the dial when it is not.
+      //
+      // Shift is bound to `forceStand`, which is the only modifier the shared
+      // action map exposes; `src/core/input.js` belongs to the lead and adding
+      // a binding there is not this agent's to make. Holding shift to change a
+      // map's zoom also happens to stop the hero walking, which is what a player
+      // wants at that moment anyway.
+      if (i.down('forceStand')) {
+        if (this.wmap.visible) this.toast(`Map ${this.wmap.cycleZoom().toFixed(1)}x`, '');
+        else this.toast(`Minimap ${this.map.cycleZoom()} m`, '');
+      } else {
+        this.wmap.toggle();
+      }
     }
-    if (i.pressed('menu')) this.panels.close();
+    if (i.pressed('menu')) {
+      if (this.wmap.visible) this.wmap.close();
+      else this.panels.close();
+    }
     this.cursor.enabled = !this.panels.visible;
   }
 
@@ -796,6 +893,21 @@ export class UiSystem {
       }
     }
 
+    // A posed shot never walks, so the fog raster it inherits is whatever the
+    // harness's handful of settle frames revealed — a 10 m disc, which is a
+    // barely-visible smudge in a 107 px dial. Reveal a room's worth around
+    // wherever the harness put the hero so a critic sees a map rather than an
+    // empty circle. Live play is untouched: `_posed` is false in 'clean'.
+    //
+    // The position is read from `player` rather than from `this._playerPos`,
+    // because the shot teleports the hero and then calls this in the same tick —
+    // `_playerPos` is still last frame's value and the reveal would land in the
+    // previous shot's room.
+    if (this._posed && this._hasWorldMap) {
+      const p = this.ctx.peek('player')?.position ?? this._playerPos;
+      this.map.markExplored(p.x, p.z, 30);
+    }
+
     // Snap the animated readouts to the posed values so the very first frame
     // after a shot is applied is already correct, instead of easing into it.
     this.globes.life.set(this.state.hp, this.state.hpMax, false);
@@ -835,11 +947,16 @@ export class UiSystem {
    *  screenshot. Replaced the instant `world:ready` arrives. */
   _paintSyntheticMap() {
     const d = this.dungeon;
-    this.map.paintCells((x, z) => d.field(x, z));
+    // setRooms first: it sizes the fog raster to the layout, and re-sizing the
+    // raster clears it. Painting first put a full map into a canvas that was
+    // then thrown away, which showed up as an empty dial in every shot.
     this.map.setRooms(d.rooms);
+    for (const r of this.map.rooms) r.seen = true;
+    this.map.paintCells((x, z) => d.field(x, z));
     this._blips = makeBlips(this.dataRng.fork(), d.rooms, 16);
     this.map.setBlips(this._blips);
     this.map.setLabel('B3', 'The Sunken Nave');
+    this.wmap.setLabel('B3', 'The Sunken Nave');
   }
 
   // =========================================================================
@@ -879,6 +996,11 @@ export class UiSystem {
       level: this.state.level,
       shadows: `${this.state.shadows}/${this.state.shadowsMax}`,
       res: `${this._resW}x${this._resH}`,
+      worldMap: this._hasWorldMap,
+      adoptedVia: this._adoptedVia,
+      worldReadyEvents: this._worldReadyEvents,
+      map: this.map.stats(),
+      fullMap: this.wmap.stats(),
     };
   }
 
@@ -890,6 +1012,7 @@ export class UiSystem {
     this.cursor.dispose();
     this.panels.dispose();
     this.system.dispose();
+    this.wmap.dispose();
     this.map.dispose();
     this.feed.dispose();
     this.toasts.dispose();

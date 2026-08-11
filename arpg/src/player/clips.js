@@ -299,11 +299,24 @@ const WALK = {
  * Root motion is authored as a distance curve rather than as translation keys on
  * the `root` bone, so movement code owns the collision response and the clip
  * only says how far along the move should be at each instant.
+ *
+ * THE CURVE IS FRONT-LOADED, and it was not. The first version spent its opening
+ * 50 ms — three simulated frames — covering 0.15 m, which is 3 m/s, HALF the
+ * hero's running speed. Measured frame by frame, pressing dash while running
+ * made the hero briefly slow down. Whatever that reads as, it does not read as a
+ * dash; a dodge has to beat running on its very first frame or the player
+ * concludes the button is laggy. The opening key now clears 0.24 (0.28 m after
+ * scaling, 16 m/s) inside a single step and the peak lands two frames later.
+ *
+ * The tail past 0.30 is animation only. `locomotion` stops consuming the curve
+ * at DASH.moveTime and hands movement control back, so those last twelve frames
+ * are a landing the player can steer out of instead of a lockout.
  */
 const DASH = {
   duration: 0.50,
   loop: false,
-  rootMotion: [[0, 0], [0.05, 0.15], [0.14, 1.55], [0.26, 3.05], [0.36, 3.75], [0.5, 4.0]],
+  rootMotion: [[0, 0], [0.017, 0.24], [0.05, 0.95], [0.10, 1.85], [0.17, 2.80],
+    [0.24, 3.45], [0.30, 3.78], [0.38, 3.95], [0.5, 4.0]],
   events: [
     { t: 0.03, name: 'dashStart' },
     { t: 0.36, name: 'foot', foot: 'L' },

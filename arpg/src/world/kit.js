@@ -52,6 +52,66 @@ export function sideGroup(nx, nz) {
 }
 
 // ===========================================================================
+// doorways
+// ===========================================================================
+
+/**
+ * The stretches of a wall run that are NOT inside a doorway.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THIS IS IN `wallRun` AND NOT IN EACH ROOM BUILDER
+ *
+ * The previous version left every hole to the builder that owned the wall, via
+ * hand-placed `wallWithGap` calls whose gap parameter was a fraction along the
+ * run. Measured against `ai`'s navigation grid, five of nine rooms were then
+ * unreachable from the spawn: a doorway is a property of the LINK between two
+ * rooms, the wall that has to open for it may belong to either room, and any
+ * scheme where each builder independently remembers to leave a gap fails the
+ * first time a seeded dimension moves a wall.
+ *
+ * So `layout.js` publishes a link's threshold as a circle, `Builder.openings`
+ * carries every circle that touches this room, and EVERY wall run in the kit
+ * splits itself around them — core, plinth, string course, proud stones, broken
+ * top and collision, all from the same list. A doorway is therefore constructed
+ * by the same data that navigation reads, and the two cannot disagree.
+ *
+ * Returned as [t0, t1] pairs in run-local coordinates, i.e. −len/2 … +len/2.
+ */
+export function openSegments(B, cx, cz, ux, uz, len) {
+  const ops = B?.openings;
+  const segs = [[-len * 0.5, len * 0.5]];
+  if (!ops || !ops.length) return segs;
+  for (const o of ops) {
+    const rx = o.x - cx, rz = o.z - cz;
+    const along = rx * ux + rz * uz;
+    const across = Math.abs(rx * uz - rz * ux);
+    if (across >= o.r) continue;                       // this run misses the doorway
+    const half = Math.sqrt(o.r * o.r - across * across);
+    const h0 = along - half, h1 = along + half;
+    for (let i = segs.length - 1; i >= 0; i--) {
+      const [a, b] = segs[i];
+      if (h1 <= a || h0 >= b) continue;                // no intersection
+      segs.splice(i, 1);
+      if (h0 - a > 0.35) segs.splice(i, 0, [a, h0]);
+      if (b - h1 > 0.35) segs.splice(i, 0, [h1, b]);
+    }
+  }
+  return segs;
+}
+
+/** Is this world point inside one of the room's doorways? Anything SOLID —
+ *  a pier, a tomb, a brazier — asks before it is placed. */
+export function inOpening(B, x, z, extra = 0) {
+  const ops = B?.openings;
+  if (!ops) return false;
+  for (const o of ops) {
+    const r = o.r + extra;
+    if ((x - o.x) * (x - o.x) + (z - o.z) * (z - o.z) < r * r) return true;
+  }
+  return false;
+}
+
+// ===========================================================================
 // walls
 // ===========================================================================
 
@@ -100,21 +160,41 @@ export function wallRun(B, o) {
     B.push(mat, group, geo, _m);
   };
 
+  // Doorways. Everything below is built per surviving stretch, so a wall that a
+  // link crosses opens for it — including its collider.
+  const ux = dx / len, uz = dz / len;
+  const segs = o.solidRun ? [[-len * 0.5, len * 0.5]] : openSegments(B, cx, cz, ux, uz, len);
+  const inHole = (t) => {
+    for (const s of segs) if (t >= s[0] && t <= s[1]) return false;
+    return true;
+  };
+
   // --- core -----------------------------------------------------------------
   const coreH = height * (ruin > 0 ? 0.86 : 1.0);
-  put(blockGeo(thick, coreH, len, rng, 0.03), 0, coreH * 0.5, 0);
-  B.solid(cx, coreH * 0.5, cz, thick * 0.5, coreH * 0.5, len * 0.5, yaw, o.surface ?? SURFACE.wall);
-
-  // --- plinth ---------------------------------------------------------------
   const pH = o.plinth ?? ARCH.plinth;
-  if (pH > 0) {
-    put(blockGeo(thick + 0.34, pH, len, rng, 0.02), 0, pH * 0.5, 0);
-  }
-
-  // --- string course --------------------------------------------------------
   const sc = o.stringCourse ?? (height > 5 ? ARCH.stringCourse : 0);
-  if (sc > 0 && sc < coreH - 0.4) {
-    put(blockGeo(thick + 0.22, 0.28, len, rng, 0.02), 0, sc, 0);
+  for (const [s0, s1] of segs) {
+    const sl = s1 - s0, sm = (s0 + s1) * 0.5;
+    put(blockGeo(thick, coreH, sl, rng, 0.03), 0, coreH * 0.5, sm);
+    B.solid(
+      cx + Math.cos(yaw) * 0 + Math.sin(yaw) * sm, coreH * 0.5,
+      cz - Math.sin(yaw) * 0 + Math.cos(yaw) * sm,
+      thick * 0.5, coreH * 0.5, sl * 0.5, yaw, o.surface ?? SURFACE.wall
+    );
+    // --- plinth -------------------------------------------------------------
+    if (pH > 0) put(blockGeo(thick + 0.34, pH, sl, rng, 0.02), 0, pH * 0.5, sm);
+    // --- string course ------------------------------------------------------
+    if (sc > 0 && sc < coreH - 0.4) put(blockGeo(thick + 0.22, 0.28, sl, rng, 0.02), 0, sc, sm);
+    // A doorway cut through a thick wall shows its REVEAL, and a reveal with no
+    // edge treatment reads as a hole punched in cardboard. One jamb stone at
+    // each end of each surviving stretch, projecting slightly, is the whole fix.
+    if (sl < len - 0.5) {
+      for (const [t, at] of [[s0, s0 === -len * 0.5], [s1, s1 === len * 0.5]]) {
+        if (at) continue;
+        put(blockGeo(thick + 0.16, Math.min(coreH, height * 0.92), 0.34, rng, 0.02),
+          0, Math.min(coreH, height * 0.92) * 0.5, t + (t < sm ? 0.17 : -0.17));
+      }
+    }
   }
 
   // --- proud stones ---------------------------------------------------------
@@ -127,8 +207,8 @@ export function wallRun(B, o) {
     const along = rng.range(-len * 0.5 + bw, len * 0.5 - bw);
     const y = rng.range(pH + 0.15, Math.min(coreH - 0.4, 4.5));
     const out = rng.range(0.045, 0.115);
-    const side = rng.float() < 0.5 ? 1 : -1;
-    put(blockGeo(thick + out * 2, bh, bw, rng, 0.035), side * 0.0, y, along);
+    if (inHole(along)) continue;
+    put(blockGeo(thick + out * 2, bh, bw, rng, 0.035), 0, y, along);
   }
 
   // --- broken top -----------------------------------------------------------
@@ -139,6 +219,7 @@ export function wallRun(B, o) {
       const w = (len / merlons) * rng.range(0.72, 1.0);
       const h = (height - coreH) * rng.range(0.35, 1.25);
       const along = -len * 0.5 + (len / merlons) * (i + 0.5);
+      if (inHole(along)) continue;
       put(blockGeo(thick * rng.range(0.8, 1.0), h, w, rng, 0.05), 0, coreH + h * 0.5, along);
     }
   }
@@ -166,6 +247,7 @@ export function lowWall(B, o) {
     const t = i / n;
     const x = x0 + (x1 - x0) * t;
     const z = z0 + (z1 - z0) * t;
+    if (inOpening(B, x, z, 0.4)) continue;
     const h = height + B.rng.range(0.5, 1.55);
     const r = B.rng.range(0.34, 0.46);
     B.push(o.mat ?? B.mat.wall, o.group ?? 'near',
@@ -196,8 +278,18 @@ export function archedWall(B, o) {
   const height = o.height ?? 5.0;
   const thick = o.thick ?? ARCH.wallThick;
   const span = o.span ?? Math.min(width - 1.6, 3.4);
-  const rise = o.rise ?? ARCH.archRise * B.rng.range(0.94, 1.06);
   const sill = o.sill ?? 0;
+  /**
+   * HEADROOM. An arch apex is `sill + span/2 · rise`, and the lintel above it is
+   * a real collider. `ai`'s navigation grid marks a cell solid if anything is
+   * within 1.9 m of the floor, so the crypt door — 3.4 m span at rise 1.15,
+   * apex 1.96 m — was a doorway no actor could path through, and the four rooms
+   * behind it were unreachable. A doorway a character cannot walk under is not a
+   * doorway, so a ground-level opening's rise is raised until its apex clears.
+   */
+  const minHead = o.minHead ?? (sill < 0.25 ? 2.75 : 0);
+  let rise = o.rise ?? ARCH.archRise * B.rng.range(0.94, 1.06);
+  if (minHead > 0) rise = Math.max(rise, (2 * (minHead - sill)) / span);
   const mat = o.mat ?? B.mat.wall;
   const group = o.group ?? sideGroup(o.nx ?? 0, o.nz ?? 0);
 
@@ -233,6 +325,7 @@ export function archedWall(B, o) {
  * pilaster strip.
  */
 export function buttress(B, o) {
+  if (inOpening(B, o.x, o.z, 0.6)) return;
   const h = o.height ?? 6.0;
   const w = o.width ?? 1.25;
   const proj = o.projection ?? 1.5;
@@ -357,7 +450,11 @@ export function arcade(B, o) {
   const radius = o.radius ?? ARCH.columnRadius;
   for (let i = 0; i <= bays; i++) {
     const px = x0 + ux * t, pz = z0 + uz * t;
-    caps.push(column(B, { x: px, z: pz, height: capH, radius, mat, group }));
+    // A pier standing in a doorway is a pier the player walks into. The arch
+    // above it still springs from the recorded capital, so the arcade's rhythm
+    // survives losing one of its supports — which is what a ruin looks like.
+    if (inOpening(B, px, pz, 0.2)) caps.push({ x: px, z: pz, top: capH - 0.18, missing: true });
+    else caps.push(column(B, { x: px, z: pz, height: capH, radius, mat, group }));
     if (i < bays) t += w[i];
   }
 
@@ -595,13 +692,77 @@ export function lancet(B, o) {
   B.push(mat, group, blockGeo(w + 0.7, 0.16, 0.42, rng, 0.02), matAt(o.x, o.y - 0.08, o.z, yaw));
 }
 
-/** Room floor: a subsiding flagstone slab, optionally with a collapsed dip. */
+/**
+ * Room floor: a subsiding flagstone slab, optionally with a collapsed dip.
+ *
+ * `yaw` IS NOT OPTIONAL FOR A ROTATED ROOM, and leaving it out was a measured
+ * hole in the level rather than a cosmetic slip. The slab and its collider were
+ * always built axis-aligned, so the crypt corridor — a 26 m room at 45° — got a
+ * 5 × 26 m box of floor laid across it at the wrong angle: `physics.groundAt`
+ * returned null at three points along its centre line, the navigation grid cut
+ * the corridor into pieces, and the four rooms beyond it were unreachable from
+ * the spawn. Every caller now passes `room.yaw`.
+ */
 export function floorSlab(B, o) {
   const geo = floorGeo(o.w, o.d, o.resolution ?? 2.4, B.rng, { dip: o.dip ?? null, amplitude: o.amplitude ?? 1 });
-  B.push(o.mat ?? B.mat.floor, o.group ?? 'floor', geo, matAt(o.x, o.y ?? 0, o.z, 0), 'keep');
+  const yaw = o.yaw ?? 0;
+  B.push(o.mat ?? B.mat.floor, o.group ?? 'floor', geo, matAt(o.x, o.y ?? 0, o.z, yaw), 'keep');
   // One flat collider. The undulation is ±5 cm and the character controller
   // ground-snaps, so 8k near-planar triangles in the BVH would buy nothing.
-  B.solid(o.x, (o.y ?? 0) - 0.5, o.z, o.w * 0.5, 0.5, o.d * 0.5, 0, o.surface ?? SURFACE.floor);
+  B.solid(o.x, (o.y ?? 0) - 0.5, o.z, o.w * 0.5, 0.5, o.d * 0.5, yaw, o.surface ?? SURFACE.floor);
+}
+
+/**
+ * A flight of steps between two EXPLICIT world points at two explicit heights.
+ *
+ * `stairs()` takes a position, a yaw and a step count and rises in its own local
+ * +Z, which puts the burden of working out which way is down on the caller —
+ * and the caller got it wrong: the hall built a flight rising SOUTH out of its
+ * own south wall while the undercroft built one rising NORTH through the same
+ * three cubic metres, so the only route between them was a solid wedge of
+ * masonry and the entire west half of the level was unreachable.
+ *
+ * This takes both ends. There is no way to point it the wrong way.
+ */
+export function flight(B, o) {
+  const rng = B.rng;
+  const mat = o.mat ?? B.mat.wall;
+  const group = o.group ?? 'far';
+  const dx = o.x1 - o.x0, dz = o.z1 - o.z0;
+  const run = Math.hypot(dx, dz);
+  if (run < 0.2) return;
+  const ux = dx / run, uz = dz / run;
+  const yaw = Math.atan2(ux, uz);
+  const dy = o.y1 - o.y0;
+  const width = o.width ?? 3.2;
+  // ~0.17 m per step is a cathedral stair; anything over 0.24 is a ladder and
+  // the character controller's step height (0.55) starts snapping through it.
+  const steps = Math.max(2, Math.round(Math.abs(dy) / 0.19) || 2);
+  const tread = run / steps;
+  for (let i = 0; i < steps; i++) {
+    const t = (i + 0.5) / steps;
+    const x = o.x0 + ux * run * t, z = o.z0 + uz * run * t;
+    // Each tread is a slab from this step back to the LOW end, so the flight is
+    // solid underneath and every collider is trivially the same box as the mesh.
+    const yTop = o.y0 + dy * ((i + 1) / steps);
+    const low = Math.min(o.y0, o.y1) - 0.6;
+    const h = yTop - low;
+    B.push(mat, group, blockGeo(width, h, tread * 1.02, rng, 0.02), matAt(x, low + h * 0.5, z, yaw));
+    B.solid(x, low + h * 0.5, z, width * 0.5, h * 0.5, tread * 0.51, yaw, o.surface ?? SURFACE.floor);
+  }
+  // Cheek walls: a flight with no side is a floating staircase, and at this
+  // camera pitch you see straight down the open edge into nothing.
+  if (o.cheeks !== false) {
+    for (const s of [-1, 1]) {
+      const cw = 0.42;
+      const cx = (o.x0 + o.x1) * 0.5 + s * (width * 0.5 + cw * 0.5) * Math.cos(yaw);
+      const cz = (o.z0 + o.z1) * 0.5 - s * (width * 0.5 + cw * 0.5) * Math.sin(yaw);
+      const h = Math.abs(dy) + 0.5;
+      const ym = Math.min(o.y0, o.y1) - 0.6;
+      B.push(mat, group, blockGeo(cw, h, run, rng, 0.03), matAt(cx, ym + h * 0.5, cz, yaw));
+      B.solid(cx, ym + h * 0.5, cz, cw * 0.5, h * 0.5, run * 0.5, yaw, SURFACE.wall);
+    }
+  }
 }
 
 /**

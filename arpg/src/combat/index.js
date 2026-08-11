@@ -320,7 +320,15 @@ export class CombatSystem {
     // Primary attack: held fire, so the chain flows while the button is down.
     // It is deliberately checked first — a player mashing left click while a
     // cooldown skill is on cooldown should still swing.
-    if (input.mouse(0) && !player?.locomotion?.dashing) {
+    //
+    // `1` IS A SECOND BINDING FOR IT. `ui`'s skill bar draws slot 0 with the
+    // key cap "1", so the HUD tells the player that key swings the weapon; this
+    // loop skipped `skill1` (correctly, it is not a keyboard *slot*) and
+    // `player` answered the press with the generic cast clip anyway. MEASURED
+    // before this line: pressing `1` left `exec.counters.casts` unchanged and
+    // rooted the hero for 550 ms. Held fire here too, so holding `1` chains the
+    // combo exactly like holding the mouse.
+    if ((input.mouse(0) || input.down('skill1')) && !player?.locomotion?.dashing) {
       this.cast('skill1', { fromInput: true });
     }
 

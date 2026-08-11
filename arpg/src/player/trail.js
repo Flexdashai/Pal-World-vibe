@@ -12,8 +12,8 @@ import { makeAdditiveMaterial } from './appearance.js';
  *     frame alone, that the dash they just pressed made them untouchable. The
  *     trail is at full brightness exactly across the invulnerable window and
  *     fades out with it.
- *  2. **It sells the distance.** A 4 m dash resolved in 0.5 s covers most of the
- *     screen; without a trail the hero appears to teleport, and teleporting
+ *  2. **It sells the distance.** A 4.6 m dash resolved in 0.30 s covers most of
+ *     the screen; without a trail the hero appears to teleport, and teleporting
  *     reads as a bug the first time a player sees it.
  *
  * ---------------------------------------------------------------------------
