@@ -14,3 +14,11 @@ demo/
 .tmp-demo/
 .tmp-rend/
 revcrops/
+
+# ARPG capture output — regenerate with arpg/tools/shotset.mjs
+arpg/shots/
+arpg/dist/
+.scratch/
+
+# Regenerate with: npm run arpg:build && node arpg/tools/bundle.mjs
+arpg/monarch.html
